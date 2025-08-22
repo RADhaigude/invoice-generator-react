@@ -1,0 +1,55 @@
+name: SonarCloud Analysis (Failing Quality Gate)
+
+on:
+  push:
+    branches:
+      - main   # Run on main branch
+  pull_request:
+    branches:
+      - qa  # Run on PRs to master
+
+jobs:
+  sonarcloud:
+    name: SonarCloud Scan
+    runs-on: ubuntu-latest
+    steps:
+      # 1️⃣ Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2️⃣ Set up Node.js
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      # 3️⃣ Install dependencies
+      - name: Install dependencies
+        run: npm install
+
+      # 4️⃣ Add intentionally failing code for Quality Gate
+      - name: Add failing test code
+        run: |
+          echo "function uncoveredFunc(){ return 42 }" >> fail.js
+          echo "function anotherUncovered(){ return uncoveredVar + 1 }" >> fail.js
+          echo "function dupFunc() { return 1; }" >> fail.js
+          echo "function dupFunc() { return 1; }" >> fail.js
+          echo "module.exports = {uncoveredFunc, anotherUncovered, dupFunc};" >> fail.js
+
+      # 5️⃣ Run tests with coverage
+      - name: Run tests
+        run: npm test -- --coverage || true
+
+      # 6️⃣ SonarCloud Scan
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v2
+        with:
+          args: >
+            -Dsonar.projectKey=RADhaigude-failing-project
+            -Dsonar.organization=RADhaigude
+            -Dsonar.sources=.
+            -Dsonar.coverage.exclusions=fail.js
+            -Dsonar.qualitygate.wait=true
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
