@@ -1,35 +1,97 @@
-name: SonarCloud Scan
+name: CI / SonarCloud Scan
 
 on:
   push:
     branches:
+      - dev
       - master
   pull_request:
     branches:
-      - master
+      - master   # ✅ Only trigger PR checks into master (adjust if needed)
 
 jobs:
   sonarcloud:
-    name: SonarCloud
     runs-on: ubuntu-latest
 
     steps:
+      # 1️⃣ Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Set up Node.js (since your project is React)
+      # 2️⃣ Setup Node.js (React project)
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
 
-      - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@master
+      # 3️⃣ Install dependencies
+      - name: Install dependencies
+        run: npm ci
+
+      # 4️⃣ Run SonarCloud Scan
+      - name: SonarCloud Scan (push)
+        if: github.event_name == 'push'
+        uses: SonarSource/sonarcloud-github-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: "https://sonarcloud.io"
         with:
           args: >
             -Dsonar.projectKey=RADhaigude_invoice-generator-react
             -Dsonar.organization=radhaigude
             -Dsonar.sources=.
+      - name: SonarCloud Scan (PR)
+        if: github.event_name == 'pull_request'
+        uses: SonarSource/sonarcloud-github-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=RADhaigude_invoice-generator-react
+            -Dsonar.organization=radhaigude
+            -Dsonar.sources=.
+            -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
+            -Dsonar.pullrequest.branch=${{ github.head_ref }}
+            -Dsonar.pullrequest.base=${{ github.base_ref }}
+
+      # 5️⃣ Fetch Quality Gate JSON
+      - name: Fetch Quality Gate status
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            curl -s -u ${{ secrets.SONAR_TOKEN }}: \
+              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react&pullRequest=${{ github.event.pull_request.number }}" \
+              -o sonar_quality_gate.json
+          else
+            curl -s -u ${{ secrets.SONAR_TOKEN }}: \
+              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react" \
+              -o sonar_quality_gate.json
+          fi
+          cat sonar_quality_gate.json
+
+      # 6️⃣ Convert JSON to HTML
+      - name: Convert Quality Gate JSON to HTML
+        run: |
+          echo "<html><head><title>SonarCloud Quality Gate</title></head><body>" > sonar_quality_gate.html
+          echo "<h1>Quality Gate Status: $(jq -r '.projectStatus.status' sonar_quality_gate.json)</h1>" >> sonar_quality_gate.html
+          echo "<table border='1' cellpadding='5'><tr><th>Metric</th><th>Status</th><th>Actual Value</th><th>Error Threshold</th></tr>" >> sonar_quality_gate.html
+          jq -c '.projectStatus.conditions[]' sonar_quality_gate.json | while read row; do
+            METRIC=$(echo $row | jq -r '.metricKey')
+            STATUS=$(echo $row | jq -r '.status')
+            ACTUAL=$(echo $row | jq -r '.actualValue')
+            THRESHOLD=$(echo $row | jq -r '.errorThreshold')
+            echo "<tr><td>$METRIC</td><td>$STATUS</td><td>$ACTUAL</td><td>$THRESHOLD</td></tr>" >> sonar_quality_gate.html
+          done
+          echo "</table></body></html>" >> sonar_quality_gate.html
+
+      # 7️⃣ Upload JSON Artifact
+      - name: Upload JSON Quality Gate
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonar-quality-gate-json
+          path: sonar_quality_gate.json
+
+      # 8️⃣ Upload HTML Artifact
+      - name: Upload HTML Quality Gate
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonar-quality-gate-html
+          path: sonar_quality_gate.html
