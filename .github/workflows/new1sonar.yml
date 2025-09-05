@@ -1,4 +1,4 @@
-name: CI / SonarCloud Scan
+name: CI/CD / SonarCloud Scan
 
 on:
   push:
@@ -17,7 +17,7 @@ concurrency:
 jobs:
   build-test-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
 
     steps:
       # 1️⃣ Checkout repository
@@ -32,7 +32,7 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install jq
+      - name: Install jq and curl
         run: |
           sudo apt-get update
           sudo apt-get install -y jq curl
@@ -79,12 +79,12 @@ jobs:
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
             -Dsonar.python.version=3.11
 
-      # 8️⃣ Fetch ALL project analyses + Quality Gates
-      - name: Fetch all SonarCloud projects metrics
-        id: sonar_all
+      # 8️⃣ Fetch ALL project analyses + full file-level reports
+      - name: Fetch full SonarCloud project reports
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
+          mkdir -p sonar_reports
           echo "📡 Fetching project list from SonarCloud..."
           curl -s -u "$SONAR_TOKEN:" \
             "https://sonarcloud.io/api/projects/search?organization=radhaigude&ps=500" \
@@ -94,94 +94,102 @@ jobs:
           echo "Found projects:"
           echo "$PROJECT_KEYS"
 
-          ALL_REPORTS=()
-
           for KEY in $PROJECT_KEYS; do
-            echo "🔍 Processing project: $KEY"
+            echo "🔍 Collecting full report for $KEY"
 
-            # wait until Quality Gate is ready
-            for i in {1..10}; do
+            # 1️⃣ Wait for Quality Gate
+            for i in {1..15}; do
               curl -s -u "$SONAR_TOKEN:" \
                 "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$KEY" \
                 -o qg.json || true
-
               STATUS=$(jq -r '.projectStatus.status // empty' qg.json)
-
               if [ -n "$STATUS" ]; then
                 echo "✅ Quality Gate: $STATUS"
                 break
               else
-                echo "⏳ Waiting for results... retrying in 10s"
-                sleep 10
+                echo "⏳ Waiting for results... retrying in 15s"
+                sleep 15
               fi
             done
 
+            # 2️⃣ Metrics
             curl -s -u "$SONAR_TOKEN:" \
               "https://sonarcloud.io/api/measures/component?component=$KEY&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density" \
               -o metrics.json
 
-            BUGS=$(jq -r '.component.measures[] | select(.metric=="bugs") | .value' metrics.json)
-            VULNS=$(jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value' metrics.json)
-            SMELLS=$(jq -r '.component.measures[] | select(.metric=="code_smells") | .value' metrics.json)
-            COVERAGE=$(jq -r '.component.measures[] | select(.metric=="coverage") | .value' metrics.json)
-            DUP=$(jq -r '.component.measures[] | select(.metric=="duplicated_lines_density") | .value' metrics.json)
+            # 3️⃣ Issues (all, paginated)
+            > issues.json
+            PAGE=1
+            while true; do
+              RESP=$(curl -s -u "$SONAR_TOKEN:" \
+                "https://sonarcloud.io/api/issues/search?componentKeys=$KEY&ps=500&p=$PAGE")
+              COUNT=$(echo "$RESP" | jq '.issues | length')
+              if [ "$COUNT" -eq 0 ]; then break; fi
+              echo "$RESP" | jq '.issues' >> issues.json
+              PAGE=$((PAGE+1))
+            done
 
-            REPORT=$(jq -n \
+            # 4️⃣ Coverage per file
+            curl -s -u "$SONAR_TOKEN:" \
+              "https://sonarcloud.io/api/measures/component_tree?component=$KEY&metricKeys=coverage,line_coverage,uncovered_lines&ps=500" \
+              -o coverage.json
+
+            # 5️⃣ Duplications & hotspots
+            curl -s -u "$SONAR_TOKEN:" \
+              "https://sonarcloud.io/api/measures/component?component=$KEY&metricKeys=duplicated_lines,duplicated_blocks,security_hotspots" \
+              -o extra.json
+
+            # Combine all into one report per project
+            jq -n \
+              --slurpfile metrics metrics.json \
+              --slurpfile issues issues.json \
+              --slurpfile coverage coverage.json \
+              --slurpfile extra extra.json \
               --arg project "$KEY" \
               --arg status "$STATUS" \
-              --arg bugs "$BUGS" \
-              --arg vulns "$VULNS" \
-              --arg smells "$SMELLS" \
-              --arg coverage "$COVERAGE" \
-              --arg dup "$DUP" \
-              '{project: $project, quality_gate: $status, bugs: $bugs, vulnerabilities: $vulns, code_smells: $smells, coverage: $coverage, duplication: $dup}')
+              '{project: $project, quality_gate: $status, metrics: $metrics[0].component, issues: $issues, coverage: $coverage[0], extra: $extra[0]}' \
+              > sonar_reports/${KEY}_full_report.json
 
-            ALL_REPORTS+=("$REPORT")
-          done
-
-          # Save all projects into one JSON array
-          jq -s '.' <<< "${ALL_REPORTS[@]}" > sonar_all_projects.json
+          # Merge all project reports
+          jq -s '.' sonar_reports/*_full_report.json > sonar_all_projects_full.json
 
       # 9️⃣ Fail if ANY project Quality Gate failed
       - name: Enforce Quality Gate
         run: |
-          FAILED=$(jq '[.[] | select(.quality_gate != "OK")] | length' sonar_all_projects.json)
+          FAILED=$(jq '[.[] | select(.quality_gate != "OK")] | length' sonar_all_projects_full.json)
           if [ "$FAILED" -gt 0 ]; then
             echo "❌ One or more projects FAILED Quality Gate!"
-            jq '.[] | select(.quality_gate != "OK")' sonar_all_projects.json
+            jq '.[] | select(.quality_gate != "OK")' sonar_all_projects_full.json
             exit 1
           else
             echo "✅ All projects PASSED Quality Gates."
-          fi
 
-      # 🔟 Upload consolidated Sonar Report JSON
-      - name: Upload Sonar Report Artifact
+      # 🔟 Upload consolidated full JSON reports
+      - name: Upload Sonar Full Report Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sonar-all-projects
-          path: sonar_all_projects.json
+          name: sonar-all-projects-full
+          path: sonar_all_projects_full.json
 
-      # 1️⃣1️⃣ Notify Teams with ALL Projects Summary
+      # 1️⃣1️⃣ Notify Teams with ALL projects summary
       - name: Notify Teams
         if: always()
         env:
           WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
           echo "📡 Preparing Teams summary for ALL projects..."
-          
-          # Build markdown summary dynamically
           FACTS=$(jq -r '.[] | 
-            "- **Project:** \(.project)\n  • Quality Gate: \(.quality_gate)\n  • Bugs: \(.bugs)\n  • Vulnerabilities: \(.vulnerabilities)\n  • Code Smells: \(.code_smells)\n  • Coverage: \(.coverage)%\n  • Duplication: \(.duplication)%\n"' sonar_all_projects.json)
+            "- **Project:** \(.project)\n  • Quality Gate: \(.quality_gate)\n  • Bugs: \(.metrics.measures[] | select(.metric=="bugs") | .value)\n  • Vulnerabilities: \(.metrics.measures[] | select(.metric=="vulnerabilities") | .value)\n  • Code Smells: \(.metrics.measures[] | select(.metric=="code_smells") | .value)\n  • Coverage: \(.metrics.measures[] | select(.metric=="coverage") | .value)%\n  • Duplication: \(.metrics.measures[] | select(.metric=="duplicated_lines_density") | .value)%\n"' sonar_all_projects_full.json)
 
           payload=$(jq -n \
-            --arg title "🚦 SonarCloud CI/CD Quality Gate Report (All Projects)" \
+            --arg title "🚦 SonarCloud CI/CD Full Quality Gate Report" \
             --arg facts "$FACTS" \
             --arg dash "https://sonarcloud.io/organizations/radhaigude/projects" \
             '{
               "@type": "MessageCard",
               "@context": "http://schema.org/extensions",
               "themeColor": "0076D7",
-              "summary": "SonarCloud Quality Gate Report",
+              "summary": "SonarCloud Full Quality Gate Report",
               "sections": [{
                 "activityTitle": $title,
                 "text": $facts,
