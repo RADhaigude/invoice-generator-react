@@ -77,50 +77,67 @@ jobs:
             -Dsonar.sources=.
             -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**,**/*.spec.ts,**/*.spec.tsx,**/*.test.ts,**/*.test.tsx,**/*.test.js
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
-            -Dsonar.python.version=3.11   # ✅ precise python version
+            -Dsonar.python.version=3.11
 
-      # 8️⃣ Wait for SonarCloud Quality Gate
-      - name: Wait for SonarCloud Quality Gate
-        id: quality_gate
+      # 8️⃣ Wait for SonarCloud Quality Gate + fetch metrics
+      - name: Wait for SonarCloud Results
+        id: sonar_results
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           echo "⏳ Waiting for SonarCloud analysis to complete..."
-          for i in {1..10}; do
+          for i in {1..15}; do
             curl -s -u "$SONAR_TOKEN:" \
               "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react" \
               -o sonar_quality_gate.json || true
-            if grep -q '"status"' sonar_quality_gate.json; then
-              STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json)
-              echo "✅ Quality Gate JSON received: $STATUS"
+
+            STATUS=$(jq -r '.projectStatus.status // empty' sonar_quality_gate.json)
+
+            if [ -n "$STATUS" ]; then
+              echo "✅ Quality Gate found: $STATUS"
               echo "status=$STATUS" >> $GITHUB_OUTPUT
+
+              # fetch metrics after gate is available
+              curl -s -u "$SONAR_TOKEN:" \
+                "https://sonarcloud.io/api/measures/component?component=RADhaigude_invoice-generator-react&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density" \
+                -o sonar_metrics.json
+
+              BUGS=$(jq -r '.component.measures[] | select(.metric=="bugs") | .value' sonar_metrics.json)
+              VULNS=$(jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value' sonar_metrics.json)
+              SMELLS=$(jq -r '.component.measures[] | select(.metric=="code_smells") | .value' sonar_metrics.json)
+              COVERAGE=$(jq -r '.component.measures[] | select(.metric=="coverage") | .value' sonar_metrics.json)
+              DUP=$(jq -r '.component.measures[] | select(.metric=="duplicated_lines_density") | .value' sonar_metrics.json)
+
+              echo "bugs=$BUGS" >> $GITHUB_OUTPUT
+              echo "vulns=$VULNS" >> $GITHUB_OUTPUT
+              echo "smells=$SMELLS" >> $GITHUB_OUTPUT
+              echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
+              echo "dup=$DUP" >> $GITHUB_OUTPUT
+
+              # merge into one report.json
+              jq -n \
+                --arg status "$STATUS" \
+                --arg bugs "$BUGS" \
+                --arg vulns "$VULNS" \
+                --arg smells "$SMELLS" \
+                --arg coverage "$COVERAGE" \
+                --arg dup "$DUP" \
+                '{quality_gate: $status, bugs: $bugs, vulnerabilities: $vulns, code_smells: $smells, coverage: $coverage, duplication: $dup}' \
+                > sonar_report.json
+
               break
             else
-              echo "⚠️ Not ready yet... retrying in 15s"
+              echo "⚠️ Sonar results not ready yet... retrying in 15s"
               sleep 15
             fi
           done
 
-      # 9️⃣ Fetch Sonar metrics (bugs, vulns, smells, coverage, duplication)
-      - name: Fetch Sonar Metrics
-        id: sonar_metrics
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          curl -s -u "$SONAR_TOKEN:" \
-            "https://sonarcloud.io/api/measures/component?component=RADhaigude_invoice-generator-react&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density" \
-            -o sonar_metrics.json
-          BUGS=$(jq -r '.component.measures[] | select(.metric=="bugs") | .value' sonar_metrics.json)
-          VULNS=$(jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value' sonar_metrics.json)
-          SMELLS=$(jq -r '.component.measures[] | select(.metric=="code_smells") | .value' sonar_metrics.json)
-          COVERAGE=$(jq -r '.component.measures[] | select(.metric=="coverage") | .value' sonar_metrics.json)
-          DUP=$(jq -r '.component.measures[] | select(.metric=="duplicated_lines_density") | .value' sonar_metrics.json)
-
-          echo "bugs=$BUGS" >> $GITHUB_OUTPUT
-          echo "vulns=$VULNS" >> $GITHUB_OUTPUT
-          echo "smells=$SMELLS" >> $GITHUB_OUTPUT
-          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
-          echo "dup=$DUP" >> $GITHUB_OUTPUT
+      # 9️⃣ Upload Sonar Report JSON as artifact
+      - name: Upload Sonar Report Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonar-report
+          path: sonar_report.json
 
       # 🔟 Notify Teams with MessageCard
       - name: Notify Teams
@@ -128,12 +145,12 @@ jobs:
         env:
           WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
-          STATUS="${{ steps.quality_gate.outputs.status }}"
-          BUGS="${{ steps.sonar_metrics.outputs.bugs }}"
-          VULNS="${{ steps.sonar_metrics.outputs.vulns }}"
-          SMELLS="${{ steps.sonar_metrics.outputs.smells }}"
-          COVERAGE="${{ steps.sonar_metrics.outputs.coverage }}"
-          DUP="${{ steps.sonar_metrics.outputs.dup }}"
+          STATUS="${{ steps.sonar_results.outputs.status }}"
+          BUGS="${{ steps.sonar_results.outputs.bugs }}"
+          VULNS="${{ steps.sonar_results.outputs.vulns }}"
+          SMELLS="${{ steps.sonar_results.outputs.smells }}"
+          COVERAGE="${{ steps.sonar_results.outputs.coverage }}"
+          DUP="${{ steps.sonar_results.outputs.dup }}"
 
           if [ "$STATUS" = "OK" ]; then
             RESULT="✅ PASSED"
@@ -184,3 +201,4 @@ jobs:
 
           echo "Sending MessageCard to Teams..."
           curl -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
+
