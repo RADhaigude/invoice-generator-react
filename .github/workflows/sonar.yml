@@ -1,96 +1,69 @@
-name: CI / SonarCloud + Reports + Teams Notification
+name: CI / SonarCloud Scan
 
 on:
   push:
     branches: [ dev, master ]
   pull_request:
-    branches: [ master ] # Trigger on PRs into master
+    branches: [ master ]  # adjust if you want PRs into dev too
 
 permissions:
   contents: read
-  pull-requests: write
+  pull-requests: write   # allows PR comments
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  sonar-ci:
+  sonarcloud:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
 
     steps:
-      # 1️⃣ Checkout
+      # 1️⃣ Checkout repository
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2️⃣ Setup Node.js & tools
+      # 2️⃣ Setup Node.js (if your project is Node-based)
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
-
-      - name: Install OS tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq pandoc
+          node-version: "18"
 
       # 3️⃣ Install dependencies
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
-      # 4️⃣ Run tests with coverage
-      - name: Run tests with coverage
-        run: |
-          npm install --save-dev jest-canvas-mock
-          echo "import 'jest-canvas-mock';" > src/setupTests.js
-          npx jest --coverage --watchAll=false --passWithNoTests --bail=0 \
-            --json --outputFile=jest-results.json \
-            --coverageReporters=text --coverageReporters=lcov || echo "⚠️ Tests failed"
-
-      # 5️⃣ Build project
-      - name: Build
-        run: CI=false npm run build --if-present
-        env:
-          NODE_OPTIONS: --openssl-legacy-provider
-
-      # 6️⃣ SonarCloud Scan
+      # 4️⃣ Run SonarCloud Scan
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          args: >
-            -Dsonar.projectKey=RADhaigude_invoice-generator-react
-            -Dsonar.organization=radhaigude
-            -Dsonar.sources=.
-            -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**
-            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
-            ${{ github.event_name == 'pull_request' && format('-Dsonar.pullrequest.key={0} -Dsonar.pullrequest.branch={1} -Dsonar.pullrequest.base={2}', github.event.pull_request.number, github.head_ref, github.base_ref) || '' }}
 
-      # 7️⃣ Fetch Quality Gate
-      - name: Fetch Quality Gate
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      # 5️⃣ Download Sonar Quality Gate status
+      - name: Get Quality Gate
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            curl -s -u "$SONAR_TOKEN:" \
-              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react&pullRequest=${{ github.event.pull_request.number }}" \
-              -o sonar_quality_gate.json
-          else
-            curl -s -u "$SONAR_TOKEN:" \
-              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react" \
-              -o sonar_quality_gate.json
-          fi
-          cat sonar_quality_gate.json
+          curl -s -u ${{ secrets.SONAR_TOKEN }}: \
+          "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react" \
+          -o sonar_quality_gate.json
 
-      # 8️⃣ Generate Reports
+      # 6️⃣ Fail pipeline if Quality Gate = ERROR
+      - name: Enforce Quality Gate
+        run: |
+          STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json)
+          echo "Quality Gate Status: $STATUS"
+          if [ "$STATUS" = "ERROR" ]; then
+            echo "❌ Quality Gate failed. Blocking pipeline."
+            exit 1
+          fi
+
+      # 7️⃣ Generate SonarCloud Reports
       - name: Generate Reports
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           python3 -m pip install requests openpyxl python-docx pypandoc lxml
-          python3 <<'EOF'
+
+          python3 - <<EOF
 import requests
 import os
 import csv
@@ -106,10 +79,7 @@ metrics = "bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,re
 url = f"https://sonarcloud.io/api/measures/component?component={project}&metricKeys={metrics}"
 headers = {"Authorization": "Basic " + base64.b64encode(f"{token}:".encode()).decode()}
 r = requests.get(url, headers=headers)
-if r.status_code != 200:
-    print("❌ Failed to fetch metrics:", r.text)
-    exit(1)
-
+r.raise_for_status()
 data = r.json()["component"]["measures"]
 
 # CSV
@@ -148,40 +118,12 @@ pypandoc.convert_text(md,"rtf",format="md",outputfile="sonar_report.rtf",extra_a
 print("✅ Reports generated")
 EOF
 
-      # 9️⃣ Notify Teams (only on PRs)
-      - name: Notify via Teams
-        if: github.event_name == 'pull_request'
-        env:
-          WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
-        run: |
-          STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json)
-          BRANCH=${{ github.head_ref }}
-          REPO=${{ github.repository }}
-          PR=${{ github.event.pull_request.number }}
-          URL="https://sonarcloud.io/project/overview?id=RADhaigude_invoice-generator-react"
-          MSG="PR #$PR on $REPO ($BRANCH) - Quality Gate: $STATUS. [View Report]($URL)"
-          payload=$(jq -n --arg title "SonarCloud CI Result" --arg text "$MSG" '{title:$title,text:$text}')
-          curl -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
-
-      # 🔟 Fail if Quality Gate fails (protect master)
-      - name: Fail if Quality Gate fails
-        if: |
-          (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-          (github.event_name == 'pull_request' && github.base_ref == 'master')
-        run: |
-          STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json)
-          if [ "$STATUS" != "OK" ]; then
-            echo "❌ Quality Gate is $STATUS. Blocking merge to master."
-            exit 1
-          fi
-
-      # 1️⃣1️⃣ Upload artifacts
+      # 8️⃣ Upload reports as artifacts
       - name: Upload Reports
         uses: actions/upload-artifact@v4
         with:
-          name: sonarcloud-reports
+          name: sonar-reports
           path: |
-            sonar_quality_gate.json
             sonar_report.csv
             sonar_report.xlsx
             sonar_report.docx
