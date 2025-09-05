@@ -99,7 +99,7 @@ jobs:
             fi
           done
 
-      # 9️⃣ Notify Teams with MessageCard (metrics + links)
+      # 9️⃣ Notify Teams with MessageCard (overall metrics + dashboard link)
       - name: Notify Teams
         if: always()
         env:
@@ -114,12 +114,14 @@ jobs:
             TARGET="Branch ${GITHUB_REF_NAME}"
           fi
 
+          # Extract metrics from JSON
           BUGS=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="bugs") | .actualValue' sonar_quality_gate.json)
           VULNS=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="vulnerabilities") | .actualValue' sonar_quality_gate.json)
           SMELLS=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="code_smells") | .actualValue' sonar_quality_gate.json)
           COVERAGE=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="coverage") | .actualValue' sonar_quality_gate.json)
           DUPLICATION=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="duplicated_lines_density") | .actualValue' sonar_quality_gate.json)
 
+          # Status color + label
           if [ "$STATUS" = "OK" ]; then
             RESULT="✅ PASSED"
             COLOR="2EB886"
@@ -128,8 +130,9 @@ jobs:
             COLOR="E74C3C"
           fi
 
+          # Build Teams MessageCard payload
           payload=$(jq -n \
-            --arg title "🚦 SonarCloud CI/CD Pipeline" \
+            --arg title "🚦 SonarCloud CI/CD Quality Gate Report" \
             --arg target "$TARGET" \
             --arg result "$RESULT" \
             --arg bugs "$BUGS" \
