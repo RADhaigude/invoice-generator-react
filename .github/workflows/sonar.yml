@@ -29,7 +29,7 @@ jobs:
       # 🔍 Run SonarCloud Scan and capture ceTaskId
       - name: SonarCloud Scan
         id: sonar
-        uses: SonarSource/sonarcloud-github-action@v4
+        uses: SonarSource/sonarcloud-github-action@v1
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
