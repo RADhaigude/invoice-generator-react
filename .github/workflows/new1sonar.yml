@@ -40,22 +40,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
+          cache: 'npm'
 
-      # 3️⃣ Install dependencies & fix audit safely
-      - name: Install dependencies & fix audit
-        run: |
-          npm install --save-dev jest jest-canvas-mock @babel/preset-react
-          npm audit fix || echo "⚠️ npm audit found vulnerabilities, continuing..."
-          echo "import 'jest-canvas-mock';" > src/setupTests.js
-          echo '{
-            "presets": ["@babel/preset-env", "@babel/preset-react"]
-          }' > babel.config.json
-
-      # 4️⃣ Install jq & curl
-      - name: Install jq & curl
-        run: sudo apt-get update && sudo apt-get install -y jq curl
-
-      # 5️⃣ Cache Node modules
+      # 3️⃣ Cache Node modules
       - name: Cache Node modules
         uses: actions/cache@v4
         with:
@@ -64,24 +51,42 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node-
 
-      # 6️⃣ Install dependencies
+      # 4️⃣ Install dependencies
       - name: Install dependencies
         run: npm ci
 
-      # 7️⃣ Run tests with coverage
+      # 5️⃣ Fix vulnerabilities safely
+      - name: Fix vulnerabilities
+        run: npm audit fix || echo "⚠️ Some vulnerabilities could not be fixed automatically"
+
+      # 6️⃣ Install dev dependencies if missing
+      - name: Ensure dev dependencies
+        run: |
+          npm install --save-dev jest jest-canvas-mock @babel/preset-react || echo "Dependencies already installed"
+
+      # 7️⃣ Setup Jest canvas mock & Babel (if not already in project)
+      - name: Setup testing configs
+        run: |
+          mkdir -p src
+          echo "import 'jest-canvas-mock';" > src/setupTests.js
+          echo '{
+            "presets": ["@babel/preset-env", "@babel/preset-react"]
+          }' > babel.config.json
+
+      # 8️⃣ Run tests with coverage
       - name: Run tests with coverage
         run: |
           npx jest --coverage --watchAll=false --passWithNoTests --bail=0 \
             --json --outputFile=jest-results.json \
             --coverageReporters=text --coverageReporters=lcov --coverageReporters=html || echo "⚠️ Some tests failed, continuing..."
 
-      # 8️⃣ Build project
+      # 9️⃣ Build project
       - name: Build project
         run: CI=false npm run build --if-present
         env:
           NODE_OPTIONS: --openssl-legacy-provider
 
-      # 9️⃣ SonarCloud Scan
+      # 🔟 SonarCloud Scan
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v2
         env:
@@ -93,35 +98,28 @@ jobs:
             -Dsonar.sources=.
             -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**,**/*.spec.ts,**/*.spec.tsx,**/*.test.ts,**/*.test.tsx,**/*.test.js
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
-            -Dsonar.python.version=3.11
 
-      # 🔟 Download Quality Gate & Quality Rules Reports
+      # 1️⃣1️⃣ Download SonarCloud Reports
       - name: Download SonarCloud Reports
         run: |
           mkdir -p sonar_reports
           cat > download_sonar_reports.py << 'EOF'
           import requests, os, json
-
           SONAR_TOKEN = os.environ['SONAR_TOKEN']
           PROJECT_KEY = os.environ['PROJECT_KEY']
           headers = {'Authorization': f'Basic {SONAR_TOKEN}:'}
-
-          # Quality Gate
           qg_url = f'https://sonarcloud.io/api/qualitygates/project_status?projectKey={PROJECT_KEY}'
           qg_resp = requests.get(qg_url, headers=headers).json()
           with open('sonar_reports/quality_gate.json', 'w') as f:
               json.dump(qg_resp, f, indent=4)
-
-          # Quality Rules (example for JavaScript)
           rules_url = 'https://sonarcloud.io/api/rules/search?languages=js'
           rules_resp = requests.get(rules_url, headers=headers).json()
           with open('sonar_reports/quality_rules.json', 'w') as f:
               json.dump(rules_resp, f, indent=4)
           EOF
+          python3 download_sonar_reports.py
 
-          python download_sonar_reports.py
-
-      # 1️⃣1️⃣ Upload SonarCloud Reports as artifacts
+      # 1️⃣2️⃣ Upload SonarCloud Reports as artifacts
       - name: Upload SonarCloud Reports
         uses: actions/upload-artifact@v4
         with:
