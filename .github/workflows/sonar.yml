@@ -1,5 +1,4 @@
 name: CI / SonarCloud Scan
-
 on:
   push:
     branches: [ dev, master ]
