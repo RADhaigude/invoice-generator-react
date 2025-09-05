@@ -15,10 +15,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1️⃣ Checkout
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      # 2️⃣ Java (Sonar needs 17)
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # 3️⃣ Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "18"
@@ -26,50 +35,44 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # 🔍 Run SonarCloud Scan and capture ceTaskId
+      # 4️⃣ SonarCloud Scan
       - name: SonarCloud Scan
-        id: sonar
-        uses: SonarSource/sonarcloud-github-action@v1
+        uses: SonarSource/sonarcloud-github-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=RADhaigude_invoice-generator-react
+            -Dsonar.organization=radhaigude
+            -Dsonar.sources=.
+            -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
 
-      # ⏳ Wait for analysis to finish
-      - name: Wait for Quality Gate
-        run: |
-          echo "Fetching task id..."
-          TASK_URL="https://sonarcloud.io/api/ce/component?component=RADhaigude_invoice-generator-react"
-          echo "Task URL: $TASK_URL"
-
-          # Poll until analysis is complete
-          for i in {1..10}; do
-            STATUS_JSON=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: "$TASK_URL")
-            TASK_STATUS=$(echo "$STATUS_JSON" | jq -r '.queue[0].status // empty')
-
-            if [ "$TASK_STATUS" == "SUCCESS" ]; then
-              echo "Analysis complete ✅"
-              break
-            else
-              echo "Analysis still running... ⏳"
-              sleep 10
-            fi
-          done
-
-      # 📥 Fetch Quality Gate result
+      # 5️⃣ Fetch Quality Gate JSON
       - name: Fetch Quality Gate status
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          curl -s -u ${{ secrets.SONAR_TOKEN }}: \
-          "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react" \
-          -o sonar_quality_gate.json
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "Fetching Quality Gate for PR #${{ github.event.pull_request.number }}"
+            curl -s -u "$SONAR_TOKEN:" \
+              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react&pullRequest=${{ github.event.pull_request.number }}" \
+              -o sonar_quality_gate.json
+          else
+            echo "Fetching Quality Gate for branch ${GITHUB_REF_NAME}"
+            curl -s -u "$SONAR_TOKEN:" \
+              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react" \
+              -o sonar_quality_gate.json
+          fi
           cat sonar_quality_gate.json
 
-      # ⛔ Enforce Quality Gate (only on master or PR → master)
+      # 6️⃣ Enforce Quality Gate
       - name: Enforce Quality Gate
-        if: |
-          (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-          (github.event_name == 'pull_request' && github.base_ref == 'master')
+        id: quality_gate
         run: |
           STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json)
           echo "Quality Gate Status: $STATUS"
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
           if [ "$STATUS" != "OK" ]; then
             echo "❌ Quality Gate failed. Blocking pipeline."
             exit 1
@@ -77,17 +80,30 @@ jobs:
             echo "✅ Quality Gate passed."
           fi
 
-      # 🔔 Teams Notification (always runs)
-      - name: Teams Notification
+      # 7️⃣ Webhook Notification (Teams/Slack)
+      - name: Notify via Webhook
         if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}   # store in repo secrets
         run: |
-          STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json || echo "ERROR")
-          if [ "$STATUS" == "OK" ]; then
-            MSG="✅ SonarCloud Quality Gate PASSED for $GITHUB_REPOSITORY"
+          STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json)
+          BRANCH="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            TARGET="Pull Request #${{ github.event.pull_request.number }}"
           else
-            MSG="❌ SonarCloud Quality Gate FAILED for $GITHUB_REPOSITORY"
+            TARGET="Branch ${BRANCH}"
           fi
 
-          curl -H 'Content-Type: application/json' \
-          -d "{\"text\": \"$MSG\"}" \
-          ${{ secrets.TEAMS_WEBHOOK_URL }}
+          if [ "$STATUS" = "OK" ]; then
+            MESSAGE="✅ SonarCloud Quality Gate PASSED for *$TARGET*"
+          else
+            MESSAGE="❌ SonarCloud Quality Gate FAILED for *$TARGET*"
+          fi
+
+          payload=$(jq -n \
+            --arg text "$MESSAGE" \
+            '{text: $text}')
+
+          echo "Sending notification..."
+          curl -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
+
