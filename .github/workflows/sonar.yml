@@ -1,4 +1,5 @@
 name: CI / SonarCloud Scan
+
 on:
   push:
     branches: [ dev, master ]
@@ -126,17 +127,17 @@ jobs:
           fi
 
           MESSAGE="🚦 *SonarCloud Analysis: Fusion eCall v2*  
-*Target:* $TARGET  
-*Quality Gate:* $RESULT  
-*Bugs:* $BUGS  
-*Vulnerabilities:* $VULNS  
-*Code Smells:* $SMELLS  
-*Coverage:* $COVERAGE%  
-*Duplication:* $DUPLICATION%  
+          *Target:* $TARGET  
+          *Quality Gate:* $RESULT  
+          *Bugs:* $BUGS  
+          *Vulnerabilities:* $VULNS  
+          *Code Smells:* $SMELLS  
+          *Coverage:* $COVERAGE%  
+          *Duplication:* $DUPLICATION%  
 
-[🔗 View Project Dashboard](https://sonarcloud.io/project/overview?id=RADhaigude_invoice-generator-react)  
-[🔎 View Issues](https://sonarcloud.io/project/issues?id=RADhaigude_invoice-generator-react)  
-📊 [View Coverage](https://sonarcloud.io/component_measures?id=RADhaigude_invoice-generator-react&metric=coverage)"
+          [🔗 View Project Dashboard](https://sonarcloud.io/project/overview?id=RADhaigude_invoice-generator-react)  
+          [🔎 View Issues](https://sonarcloud.io/project/issues?id=RADhaigude_invoice-generator-react)  
+          📊 [View Coverage](https://sonarcloud.io/component_measures?id=RADhaigude_invoice-generator-react&metric=coverage)"
 
           payload=$(jq -n --arg text "$MESSAGE" '{text: $text}')
 
