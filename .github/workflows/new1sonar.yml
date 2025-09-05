@@ -64,9 +64,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node-
 
-      # 6️⃣ Install dependencies
-      - name: Install dependencies
-        run: npm ci
+            - name: Run npm audit
+              run: npm audit || echo "⚠️ npm audit found vulnerabilities, continuing..."
 
       # 7️⃣ Run tests with coverage
       - name: Run tests with coverage
