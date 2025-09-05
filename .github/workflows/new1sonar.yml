@@ -86,31 +86,63 @@ jobs:
             -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**,**/*.spec.ts,**/*.spec.tsx,**/*.test.ts,**/*.test.tsx,**/*.test.js
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
 
-      - name: Download SonarCloud Reports
+      - name: Download SonarCloud Reports (JSON + CSV)
         run: |
           mkdir -p sonar_reports
           cat > download_sonar_reports.py << 'EOF'
-          import requests, os, json, base64
+          import requests, os, json, base64, csv
 
           SONAR_TOKEN = os.environ['SONAR_TOKEN']
           PROJECT_KEY = os.environ['PROJECT_KEY']
 
+          # Basic Auth header
           auth_header = base64.b64encode(f"{SONAR_TOKEN}:".encode()).decode()
           headers = {'Authorization': f'Basic {auth_header}'}
 
+          # ------------------ Quality Gate ------------------
           qg_url = f'https://sonarcloud.io/api/qualitygates/project_status?projectKey={PROJECT_KEY}'
           qg_resp = requests.get(qg_url, headers=headers)
+
           if qg_resp.status_code == 200:
+              qg_json = qg_resp.json()
               with open('sonar_reports/quality_gate.json', 'w') as f:
-                  json.dump(qg_resp.json(), f, indent=4)
+                  json.dump(qg_json, f, indent=4)
+
+              qg_conditions = qg_json['projectStatus']['conditions']
+              with open('sonar_reports/quality_gate.csv', 'w', newline='') as csvfile:
+                  writer = csv.DictWriter(csvfile, fieldnames=['metric', 'status', 'actualValue', 'errorThreshold'])
+                  writer.writeheader()
+                  for cond in qg_conditions:
+                      writer.writerow({
+                          'metric': cond.get('metricKey', ''),
+                          'status': cond.get('status', ''),
+                          'actualValue': cond.get('actualValue', ''),
+                          'errorThreshold': cond.get('errorThreshold', '')
+                      })
           else:
               print(f"⚠️ Failed to fetch Quality Gate: {qg_resp.status_code} {qg_resp.text}")
 
+          # ------------------ Quality Rules ------------------
           rules_url = 'https://sonarcloud.io/api/rules/search?languages=js'
           rules_resp = requests.get(rules_url, headers=headers)
+
           if rules_resp.status_code == 200:
+              rules_json = rules_resp.json()
               with open('sonar_reports/quality_rules.json', 'w') as f:
-                  json.dump(rules_resp.json(), f, indent=4)
+                  json.dump(rules_json, f, indent=4)
+
+              rules_list = rules_json.get('rules', [])
+              with open('sonar_reports/quality_rules.csv', 'w', newline='') as csvfile:
+                  writer = csv.DictWriter(csvfile, fieldnames=['key', 'name', 'severity', 'status', 'lang'])
+                  writer.writeheader()
+                  for rule in rules_list:
+                      writer.writerow({
+                          'key': rule.get('key', ''),
+                          'name': rule.get('name', ''),
+                          'severity': rule.get('severity', ''),
+                          'status': rule.get('status', ''),
+                          'lang': rule.get('lang', '')
+                      })
           else:
               print(f"⚠️ Failed to fetch Quality Rules: {rules_resp.status_code} {rules_resp.text}")
           EOF
@@ -121,4 +153,3 @@ jobs:
         with:
           name: SonarCloudReports
           path: sonar_reports
-
