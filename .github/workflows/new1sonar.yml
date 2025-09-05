@@ -99,25 +99,40 @@ jobs:
             -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**,**/*.spec.ts,**/*.spec.tsx,**/*.test.ts,**/*.test.tsx,**/*.test.js
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
 
-      # 1️⃣1️⃣ Download SonarCloud Reports
+            # 1️⃣1️⃣ Download SonarCloud Reports safely
       - name: Download SonarCloud Reports
         run: |
           mkdir -p sonar_reports
           cat > download_sonar_reports.py << 'EOF'
-          import requests, os, json
+          import requests, os, json, base64
+
           SONAR_TOKEN = os.environ['SONAR_TOKEN']
           PROJECT_KEY = os.environ['PROJECT_KEY']
-          headers = {'Authorization': f'Basic {SONAR_TOKEN}:'}
+
+          # SonarCloud API uses Basic Auth with token as username and empty password
+          auth_header = base64.b64encode(f"{SONAR_TOKEN}:".encode()).decode()
+          headers = {'Authorization': f'Basic {auth_header}'}
+
+          # Quality Gate
           qg_url = f'https://sonarcloud.io/api/qualitygates/project_status?projectKey={PROJECT_KEY}'
-          qg_resp = requests.get(qg_url, headers=headers).json()
-          with open('sonar_reports/quality_gate.json', 'w') as f:
-              json.dump(qg_resp, f, indent=4)
+          qg_resp = requests.get(qg_url, headers=headers)
+          if qg_resp.status_code == 200:
+              with open('sonar_reports/quality_gate.json', 'w') as f:
+                  json.dump(qg_resp.json(), f, indent=4)
+          else:
+              print(f"⚠️ Failed to fetch Quality Gate: {qg_resp.status_code} {qg_resp.text}")
+
+          # Quality Rules (example for JS)
           rules_url = 'https://sonarcloud.io/api/rules/search?languages=js'
-          rules_resp = requests.get(rules_url, headers=headers).json()
-          with open('sonar_reports/quality_rules.json', 'w') as f:
-              json.dump(rules_resp, f, indent=4)
+          rules_resp = requests.get(rules_url, headers=headers)
+          if rules_resp.status_code == 200:
+              with open('sonar_reports/quality_rules.json', 'w') as f:
+                  json.dump(rules_resp.json(), f, indent=4)
+          else:
+              print(f"⚠️ Failed to fetch Quality Rules: {rules_resp.status_code} {rules_resp.text}")
           EOF
-          python3 download_sonar_reports.py
+          python3 download_sonar_reports.py || echo "⚠️ Python script failed, continuing..."
+
 
       # 1️⃣2️⃣ Upload SonarCloud Reports as artifacts
       - name: Upload SonarCloud Reports
