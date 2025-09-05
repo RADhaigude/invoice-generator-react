@@ -78,6 +78,7 @@ jobs:
 
       # 8️⃣ Wait for SonarCloud Quality Gate
       - name: Wait for SonarCloud Quality Gate
+        id: quality_gate
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
@@ -88,8 +89,9 @@ jobs:
               -o sonar_quality_gate.json || true
 
             if grep -q '"status"' sonar_quality_gate.json; then
-              echo "✅ Quality Gate JSON received"
-              cat sonar_quality_gate.json
+              STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json)
+              echo "✅ Quality Gate JSON received: $STATUS"
+              echo "status=$STATUS" >> $GITHUB_OUTPUT
               break
             else
               echo "⚠️ Not ready yet... retrying in 15s"
@@ -97,14 +99,14 @@ jobs:
             fi
           done
 
-
-      # 9️⃣ Notify Teams with Quality Gate Result
+      # 9️⃣ Notify Teams with Quality Gate & Metrics
       - name: Notify Teams
         if: always()
         env:
           WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
           STATUS="${{ steps.quality_gate.outputs.status }}"
+          echo "SonarCloud Quality Gate Status: $STATUS"
 
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             TARGET="Pull Request #${{ github.event.pull_request.number }}"
@@ -112,14 +114,32 @@ jobs:
             TARGET="Branch ${GITHUB_REF_NAME}"
           fi
 
+          BUGS=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="bugs") | .actualValue' sonar_quality_gate.json)
+          VULNS=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="vulnerabilities") | .actualValue' sonar_quality_gate.json)
+          SMELLS=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="code_smells") | .actualValue' sonar_quality_gate.json)
+          COVERAGE=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="coverage") | .actualValue' sonar_quality_gate.json)
+          DUPLICATION=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="duplicated_lines_density") | .actualValue' sonar_quality_gate.json)
+
           if [ "$STATUS" = "OK" ]; then
-            MESSAGE="✅ SonarCloud Quality Gate PASSED for *$TARGET*"
+            RESULT="✅ PASSED"
           else
-            MESSAGE="❌ SonarCloud Quality Gate FAILED for *$TARGET*"
+            RESULT="❌ FAILED"
           fi
+
+          MESSAGE="🚦 *SonarCloud Analysis: Fusion eCall v2*  
+*Target:* $TARGET  
+*Quality Gate:* $RESULT  
+*Bugs:* $BUGS  
+*Vulnerabilities:* $VULNS  
+*Code Smells:* $SMELLS  
+*Coverage:* $COVERAGE%  
+*Duplication:* $DUPLICATION%  
+
+[🔗 View Project Dashboard](https://sonarcloud.io/project/overview?id=RADhaigude_invoice-generator-react)  
+[🔎 View Issues](https://sonarcloud.io/project/issues?id=RADhaigude_invoice-generator-react)  
+📊 [View Coverage](https://sonarcloud.io/component_measures?id=RADhaigude_invoice-generator-react&metric=coverage)"
 
           payload=$(jq -n --arg text "$MESSAGE" '{text: $text}')
 
           echo "Sending notification to Teams..."
           curl -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
-
