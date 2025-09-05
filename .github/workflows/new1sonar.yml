@@ -24,8 +24,8 @@ jobs:
     timeout-minutes: 60
 
     env:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}       # SonarCloud token
-      ORG: radhaigude                                # SonarCloud organization
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      ORG: radhaigude
       PROJECT_KEY: RADhaigude_invoice-generator-react
 
     steps:
@@ -41,11 +41,11 @@ jobs:
         with:
           node-version: '18'
 
-      # 3️⃣ Install dependencies & fix vulnerabilities
+      # 3️⃣ Install dependencies & fix audit safely
       - name: Install dependencies & fix audit
         run: |
           npm install --save-dev jest jest-canvas-mock @babel/preset-react
-          npm audit fix --force
+          npm audit fix || echo "⚠️ npm audit found vulnerabilities, continuing..."
           echo "import 'jest-canvas-mock';" > src/setupTests.js
           echo '{
             "presets": ["@babel/preset-env", "@babel/preset-react"]
@@ -64,8 +64,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node-
 
-            - name: Run npm audit
-              run: npm audit || echo "⚠️ npm audit found vulnerabilities, continuing..."
+      # 6️⃣ Install dependencies
+      - name: Install dependencies
+        run: npm ci
 
       # 7️⃣ Run tests with coverage
       - name: Run tests with coverage
@@ -94,70 +95,35 @@ jobs:
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
             -Dsonar.python.version=3.11
 
-      # 🔟 Fetch all SonarCloud projects analyses & generate report
-      - name: Fetch SonarCloud reports
+      # 🔟 Download Quality Gate & Quality Rules Reports
+      - name: Download SonarCloud Reports
         run: |
           mkdir -p sonar_reports
-          echo "📡 Fetching all projects from SonarCloud..."
-          curl -s -u "$SONAR_TOKEN:" \
-            "https://sonarcloud.io/api/projects/search?organization=${ORG}&ps=500" \
-            -o sonar_reports/projects.json
+          cat > download_sonar_reports.py << 'EOF'
+          import requests, os, json
 
-          PROJECT_KEYS=$(jq -r '.components[].key' sonar_reports/projects.json)
-          echo "Found projects:" $PROJECT_KEYS
+          SONAR_TOKEN = os.environ['SONAR_TOKEN']
+          PROJECT_KEY = os.environ['PROJECT_KEY']
+          headers = {'Authorization': f'Basic {SONAR_TOKEN}:'}
 
-          ALL_PROJECTS=()
+          # Quality Gate
+          qg_url = f'https://sonarcloud.io/api/qualitygates/project_status?projectKey={PROJECT_KEY}'
+          qg_resp = requests.get(qg_url, headers=headers).json()
+          with open('sonar_reports/quality_gate.json', 'w') as f:
+              json.dump(qg_resp, f, indent=4)
 
-          for KEY in $PROJECT_KEYS; do
-            echo "🔍 Processing project: $KEY"
+          # Quality Rules (example for JavaScript)
+          rules_url = 'https://sonarcloud.io/api/rules/search?languages=js'
+          rules_resp = requests.get(rules_url, headers=headers).json()
+          with open('sonar_reports/quality_rules.json', 'w') as f:
+              json.dump(rules_resp, f, indent=4)
+          EOF
 
-            # Fetch Quality Gate for the project
-            curl -s -u "$SONAR_TOKEN:" \
-              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$KEY" \
-              -o sonar_reports/qg_$KEY.json
-            STATUS=$(jq -r '.projectStatus.status' sonar_reports/qg_$KEY.json)
+          python download_sonar_reports.py
 
-            # Fetch measures/metrics
-            curl -s -u "$SONAR_TOKEN:" \
-              "https://sonarcloud.io/api/measures/component?component=$KEY&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density" \
-              -o sonar_reports/metrics_$KEY.json
-
-            BUGS=$(jq -r '.component.measures[] | select(.metric=="bugs") | .value' sonar_reports/metrics_$KEY.json)
-            VULNS=$(jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value' sonar_reports/metrics_$KEY.json)
-            SMELLS=$(jq -r '.component.measures[] | select(.metric=="code_smells") | .value' sonar_reports/metrics_$KEY.json)
-            COVERAGE=$(jq -r '.component.measures[] | select(.metric=="coverage") | .value' sonar_reports/metrics_$KEY.json)
-            DUP=$(jq -r '.component.measures[] | select(.metric=="duplicated_lines_density") | .value' sonar_reports/metrics_$KEY.json)
-
-            PROJECT_JSON=$(jq -n \
-              --arg project "$KEY" \
-              --arg quality_gate "$STATUS" \
-              --arg bugs "$BUGS" \
-              --arg vulnerabilities "$VULNS" \
-              --arg code_smells "$SMELLS" \
-              --arg coverage "$COVERAGE" \
-              --arg duplication "$DUP" \
-              '{
-                project: $project,
-                quality_gate: $quality_gate,
-                metrics: {
-                  bugs: $bugs,
-                  vulnerabilities: $vulnerabilities,
-                  code_smells: $code_smells,
-                  coverage: $coverage,
-                  duplication: $dup
-                }
-              }')
-
-            ALL_PROJECTS+=("$PROJECT_JSON")
-          done
-
-          # Save all project data to one JSON file
-          jq -s '.' <<< "${ALL_PROJECTS[@]}" > sonar_reports/all_projects_report.json
-          echo "✅ All projects report generated: sonar_reports/all_projects_report.json"
-
-      # 1️⃣1️⃣ Upload full Sonar JSON report as artifact
-      - name: Upload SonarCloud full report
+      # 1️⃣1️⃣ Upload SonarCloud Reports as artifacts
+      - name: Upload SonarCloud Reports
         uses: actions/upload-artifact@v4
         with:
-          name: sonar-all-projects-full
-          path: sonar_reports/all_projects_report.json
+          name: SonarCloudReports
+          path: sonar_reports
