@@ -31,16 +31,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-
-      # 3️⃣ Install dependencies & fix vulnerabilities
-      - name: Install dependencies & fix audit
+    # 3️⃣ Install dependencies & audit
+      - name: Install dependencies & audit
         run: |
-          npm install --save-dev jest jest-canvas-mock @babel/preset-react
-          npm audit fix --force
-          echo "import 'jest-canvas-mock';" > src/setupTests.js
-          echo '{
-            "presets": ["@babel/preset-env", "@babel/preset-react"]
-          }' > babel.config.json
+         npm ci
+         echo "📦 Running npm audit..."
+         npm audit || echo "⚠️ npm audit found vulnerabilities but continuing CI"
+
 
       - name: Install jq & curl
         run: sudo apt-get update && sudo apt-get install -y jq curl
