@@ -86,11 +86,9 @@ jobs:
         env:
           NODE_OPTIONS: --openssl-legacy-provider
 
-      # 🔟 SonarCloud Scan
+           # 9️⃣ SonarCloud Scan
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v2
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
             -Dsonar.projectKey=${{ env.PROJECT_KEY }}
