@@ -99,7 +99,7 @@ jobs:
             fi
           done
 
-      # 9️⃣ Notify Teams with Quality Gate & Metrics
+      # 9️⃣ Notify Teams with MessageCard (metrics + links)
       - name: Notify Teams
         if: always()
         env:
@@ -122,24 +122,48 @@ jobs:
 
           if [ "$STATUS" = "OK" ]; then
             RESULT="✅ PASSED"
+            COLOR="2EB886"
           else
             RESULT="❌ FAILED"
+            COLOR="E74C3C"
           fi
 
-          MESSAGE="🚦 *SonarCloud Analysis: Fusion eCall v2*  
-          *Target:* $TARGET  
-          *Quality Gate:* $RESULT  
-          *Bugs:* $BUGS  
-          *Vulnerabilities:* $VULNS  
-          *Code Smells:* $SMELLS  
-          *Coverage:* $COVERAGE%  
-          *Duplication:* $DUPLICATION%  
+          payload=$(jq -n \
+            --arg title "🚦 SonarCloud CI/CD Pipeline" \
+            --arg target "$TARGET" \
+            --arg result "$RESULT" \
+            --arg bugs "$BUGS" \
+            --arg vulns "$VULNS" \
+            --arg smells "$SMELLS" \
+            --arg coverage "$COVERAGE%" \
+            --arg dup "$DUPLICATION%" \
+            --arg dash "https://sonarcloud.io/project/overview?id=RADhaigude_invoice-generator-react" \
+            '{
+              "@type": "MessageCard",
+              "@context": "http://schema.org/extensions",
+              "themeColor": "0076D7",
+              "summary": "SonarCloud Quality Gate Report",
+              "sections": [{
+                "activityTitle": $title,
+                "activitySubtitle": "Target: \($target)",
+                "facts": [
+                  {"name": "Quality Gate", "value": $result},
+                  {"name": "Bugs", "value": $bugs},
+                  {"name": "Vulnerabilities", "value": $vulns},
+                  {"name": "Code Smells", "value": $smells},
+                  {"name": "Coverage", "value": $coverage},
+                  {"name": "Duplication", "value": $dup}
+                ],
+                "markdown": true
+              }],
+              "potentialAction": [{
+                "@type": "OpenUri",
+                "name": "🔗 View Dashboard",
+                "targets": [
+                  { "os": "default", "uri": $dash }
+                ]
+              }]
+            }')
 
-          [🔗 View Project Dashboard](https://sonarcloud.io/project/overview?id=RADhaigude_invoice-generator-react)  
-          [🔎 View Issues](https://sonarcloud.io/project/issues?id=RADhaigude_invoice-generator-react)  
-          📊 [View Coverage](https://sonarcloud.io/component_measures?id=RADhaigude_invoice-generator-react&metric=coverage)"
-
-          payload=$(jq -n --arg text "$MESSAGE" '{text: $text}')
-
-          echo "Sending notification to Teams..."
+          echo "Sending MessageCard to Teams..."
           curl -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
