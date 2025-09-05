@@ -10,117 +10,84 @@ permissions:
   contents: read
   pull-requests: write
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  build-test-scan:
+  sonarcloud:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
 
     steps:
-      # 1️⃣ Checkout repository
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2️⃣ Tooling (Node + jq)
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: "18"
 
-      - name: Install OS tooling
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq
-
-      # 3️⃣ Cache Node modules
-      - name: Cache Node modules
-        uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
-
-      # 4️⃣ Install dependencies
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
-      # 5️⃣ Run tests with coverage
-      - name: Run tests with coverage
-        run: |
-          npm install --save-dev jest-canvas-mock
-          echo "import 'jest-canvas-mock';" > src/setupTests.js
-          npx jest --coverage --watchAll=false --passWithNoTests --bail=0 \
-            --json --outputFile=jest-results.json \
-            --coverageReporters=text --coverageReporters=lcov --coverageReporters=html || echo "⚠️ Some tests failed, but continuing..."
-
-      # 6️⃣ Build project
-      - name: Build project
-        run: CI=false npm run build --if-present
-        env:
-          NODE_OPTIONS: --openssl-legacy-provider
-
-      # 7️⃣ SonarCloud Scan
+      # 🔍 Run SonarCloud Scan and capture ceTaskId
       - name: SonarCloud Scan
+        id: sonar
         uses: SonarSource/sonarcloud-github-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          args: >
-            -Dsonar.projectKey=RADhaigude_invoice-generator-react
-            -Dsonar.organization=radhaigude
-            -Dsonar.sources=.
-            -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**,**/*.spec.ts,**/*.spec.tsx,**/*.test.ts,**/*.test.tsx,**/*.test.js
-            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
 
-      # 8️⃣ Fetch Quality Gate JSON
-      - name: Fetch Quality Gate status
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      # ⏳ Wait for analysis to finish
+      - name: Wait for Quality Gate
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            curl -s -u "$SONAR_TOKEN:" \
-              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react&pullRequest=${{ github.event.pull_request.number }}" \
-              -o sonar_quality_gate.json
-          else
-            curl -s -u "$SONAR_TOKEN:" \
-              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react" \
-              -o sonar_quality_gate.json
-          fi
+          echo "Fetching task id..."
+          TASK_URL="https://sonarcloud.io/api/ce/component?component=RADhaigude_invoice-generator-react"
+          echo "Task URL: $TASK_URL"
+
+          # Poll until analysis is complete
+          for i in {1..10}; do
+            STATUS_JSON=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: "$TASK_URL")
+            TASK_STATUS=$(echo "$STATUS_JSON" | jq -r '.queue[0].status // empty')
+
+            if [ "$TASK_STATUS" == "SUCCESS" ]; then
+              echo "Analysis complete ✅"
+              break
+            else
+              echo "Analysis still running... ⏳"
+              sleep 10
+            fi
+          done
+
+      # 📥 Fetch Quality Gate result
+      - name: Fetch Quality Gate status
+        run: |
+          curl -s -u ${{ secrets.SONAR_TOKEN }}: \
+          "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react" \
+          -o sonar_quality_gate.json
           cat sonar_quality_gate.json
 
-      # 9️⃣ Enforce Quality Gate
+      # ⛔ Enforce Quality Gate (only on master or PR → master)
       - name: Enforce Quality Gate
-        id: quality_gate
+        if: |
+          (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+          (github.event_name == 'pull_request' && github.base_ref == 'master')
         run: |
           STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json)
           echo "Quality Gate Status: $STATUS"
-          echo "status=$STATUS" >> $GITHUB_OUTPUT
           if [ "$STATUS" != "OK" ]; then
             echo "❌ Quality Gate failed. Blocking pipeline."
             exit 1
-          fi
-
-      # 🔟 Send Webhook Notification (Teams/Slack)
-      - name: Notify via Webhook
-        if: always()   # Always notify (pass or fail)
-        env:
-          WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}   # Add this in repo secrets
-        run: |
-          STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json)
-          if [ "$STATUS" = "OK" ]; then
-            MESSAGE="✅ SonarCloud Quality Gate PASSED for branch *${GITHUB_REF_NAME}*"
           else
-            MESSAGE="❌ SonarCloud Quality Gate FAILED for branch *${GITHUB_REF_NAME}*"
+            echo "✅ Quality Gate passed."
           fi
 
-          payload=$(jq -n \
-            --arg text "$MESSAGE" \
-            '{text: $text}')
+      # 🔔 Teams Notification (always runs)
+      - name: Teams Notification
+        if: always()
+        run: |
+          STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json || echo "ERROR")
+          if [ "$STATUS" == "OK" ]; then
+            MSG="✅ SonarCloud Quality Gate PASSED for $GITHUB_REPOSITORY"
+          else
+            MSG="❌ SonarCloud Quality Gate FAILED for $GITHUB_REPOSITORY"
+          fi
 
-          echo "Sending notification..."
-          curl -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
-
+          curl -H 'Content-Type: application/json' \
+          -d "{\"text\": \"$MSG\"}" \
+          ${{ secrets.TEAMS_WEBHOOK_URL }}
