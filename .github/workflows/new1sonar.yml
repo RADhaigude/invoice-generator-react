@@ -2,9 +2,13 @@ name: CI / SonarCloud Scan
 
 on:
   push:
-    branches: [ dev, master ]
+    branches:
+      - dev
+      - master
   pull_request:
-    branches: [ master ]
+    branches:
+      - dev
+      - master
 
 permissions:
   contents: read
@@ -19,6 +23,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}       # SonarCloud token
+      ORG: radhaigude                                # SonarCloud organization
+      PROJECT_KEY: RADhaigude_invoice-generator-react
+
     steps:
       # 1️⃣ Checkout repository
       - name: Checkout code
@@ -26,23 +35,27 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 2️⃣ Tooling
+      # 2️⃣ Set up Node.js
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-    # 3️⃣ Install dependencies & audit
-      - name: Install dependencies & audit
+
+      # 3️⃣ Install dependencies & fix vulnerabilities
+      - name: Install dependencies & fix audit
         run: |
-         npm ci
-         echo "📦 Running npm audit..."
-         npm audit || echo "⚠️ npm audit found vulnerabilities but continuing CI"
+          npm install --save-dev jest jest-canvas-mock @babel/preset-react
+          npm audit fix --force
+          echo "import 'jest-canvas-mock';" > src/setupTests.js
+          echo '{
+            "presets": ["@babel/preset-env", "@babel/preset-react"]
+          }' > babel.config.json
 
-
+      # 4️⃣ Install jq & curl
       - name: Install jq & curl
         run: sudo apt-get update && sudo apt-get install -y jq curl
 
-      # 4️⃣ Cache Node modules
+      # 5️⃣ Cache Node modules
       - name: Cache Node modules
         uses: actions/cache@v4
         with:
@@ -51,51 +64,48 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node-
 
-      # 5️⃣ Install dependencies
+      # 6️⃣ Install dependencies
       - name: Install dependencies
         run: npm ci
 
-      # 6️⃣ Run tests with coverage
+      # 7️⃣ Run tests with coverage
       - name: Run tests with coverage
         run: |
           npx jest --coverage --watchAll=false --passWithNoTests --bail=0 \
             --json --outputFile=jest-results.json \
             --coverageReporters=text --coverageReporters=lcov --coverageReporters=html || echo "⚠️ Some tests failed, continuing..."
 
-      # 7️⃣ Build project
+      # 8️⃣ Build project
       - name: Build project
         run: CI=false npm run build --if-present
         env:
           NODE_OPTIONS: --openssl-legacy-provider
 
-      # 8️⃣ SonarCloud Scan
+      # 9️⃣ SonarCloud Scan
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
-            -Dsonar.projectKey=RADhaigude_invoice-generator-react
-            -Dsonar.organization=radhaigude
+            -Dsonar.projectKey=${{ env.PROJECT_KEY }}
+            -Dsonar.organization=${{ env.ORG }}
             -Dsonar.sources=.
             -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**,**/*.spec.ts,**/*.spec.tsx,**/*.test.ts,**/*.test.tsx,**/*.test.js
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
             -Dsonar.python.version=3.11
 
-      # 9️⃣ Fetch all projects + metrics + quality gates
-      - name: Fetch all SonarCloud projects analyses
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      # 🔟 Fetch all SonarCloud projects analyses & generate report
+      - name: Fetch SonarCloud reports
         run: |
           mkdir -p sonar_reports
           echo "📡 Fetching all projects from SonarCloud..."
           curl -s -u "$SONAR_TOKEN:" \
-            "https://sonarcloud.io/api/projects/search?organization=radhaigude&ps=500" \
+            "https://sonarcloud.io/api/projects/search?organization=${ORG}&ps=500" \
             -o sonar_reports/projects.json
 
           PROJECT_KEYS=$(jq -r '.components[].key' sonar_reports/projects.json)
-          echo "Found projects:"
-          echo "$PROJECT_KEYS"
+          echo "Found projects:" $PROJECT_KEYS
 
           ALL_PROJECTS=()
 
@@ -146,7 +156,7 @@ jobs:
           jq -s '.' <<< "${ALL_PROJECTS[@]}" > sonar_reports/all_projects_report.json
           echo "✅ All projects report generated: sonar_reports/all_projects_report.json"
 
-      # 🔟 Upload full Sonar JSON report as artifact
+      # 1️⃣1️⃣ Upload full Sonar JSON report as artifact
       - name: Upload SonarCloud full report
         uses: actions/upload-artifact@v4
         with:
