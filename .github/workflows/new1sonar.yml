@@ -17,7 +17,7 @@ concurrency:
 jobs:
   build-test-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 50
 
     steps:
       # 1️⃣ Checkout repository
@@ -32,10 +32,18 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install jq
+      - name: Install dependencies & fix vulnerabilities
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq curl
+          npm install --save-dev jest jest-canvas-mock @babel/preset-react
+          npm audit fix --force
+          echo "import 'jest-canvas-mock';" > src/setupTests.js
+          # Create Babel config to handle JSX
+          echo '{
+            "presets": ["@babel/preset-env", "@babel/preset-react"]
+          }' > babel.config.json
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq curl
 
       # 3️⃣ Cache Node modules
       - name: Cache Node modules
@@ -46,33 +54,24 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node-
 
-      # 4️⃣ Install dependencies & audit fix
+      # 4️⃣ Install dependencies
       - name: Install dependencies
-        run: |
-          npm ci
-          npm audit fix --force || echo "⚠️ Audit fix applied with force."
+        run: npm ci
 
-      # 5️⃣ Setup Babel for JSX
-      - name: Setup Babel
-        run: |
-          npm install --save-dev @babel/preset-react jest-canvas-mock
-          echo '{"presets":["@babel/preset-env","@babel/preset-react"]}' > babel.config.json
-
-      # 6️⃣ Run tests with coverage (gracefully)
+      # 5️⃣ Run tests with coverage
       - name: Run tests with coverage
         run: |
-          echo "import 'jest-canvas-mock';" > src/setupTests.js
           npx jest --coverage --watchAll=false --passWithNoTests --bail=0 \
             --json --outputFile=jest-results.json \
-            --coverageReporters=text --coverageReporters=lcov --coverageReporters=html || echo "⚠️ Some tests failed, but continuing..."
+            --coverageReporters=text --coverageReporters=lcov --coverageReporters=html || echo "⚠️ Some tests failed, continuing..."
 
-      # 7️⃣ Build project
+      # 6️⃣ Build project
       - name: Build project
         run: CI=false npm run build --if-present
         env:
           NODE_OPTIONS: --openssl-legacy-provider
 
-      # 8️⃣ SonarCloud Scan
+      # 7️⃣ SonarCloud Scan
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v2
         env:
@@ -86,114 +85,26 @@ jobs:
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
             -Dsonar.python.version=3.11
 
-      # 9️⃣ Fetch ALL project analyses + Quality Gates (full metrics + issues)
-      - name: Fetch all SonarCloud project metrics
+      # 8️⃣ Fetch SonarCloud project metrics + Quality Gate
+      - name: Fetch SonarCloud Quality Gate
         run: |
           mkdir -p sonar_reports
-          echo "📡 Fetching project list from SonarCloud..."
           curl -s -u "$SONAR_TOKEN:" \
-            "https://sonarcloud.io/api/projects/search?organization=radhaigude&ps=500" \
-            -o projects.json
-
-          PROJECT_KEYS=$(jq -r '.components[].key' projects.json)
-          echo "Found projects:"
-          echo "$PROJECT_KEYS"
-
-          ALL_REPORTS=()
-
-          for KEY in $PROJECT_KEYS; do
-            echo "🔍 Processing project: $KEY"
-
-            # Wait for Quality Gate
-            for i in {1..10}; do
-              curl -s -u "$SONAR_TOKEN:" \
-                "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$KEY" \
-                -o qg.json || true
-              STATUS=$(jq -r '.projectStatus.status // empty' qg.json)
-              if [ -n "$STATUS" ]; then
-                echo "✅ Quality Gate: $STATUS"
-                break
-              else
-                echo "⏳ Waiting for results... retrying in 10s"
-                sleep 10
-              fi
-            done
-
-            # Fetch metrics
-            curl -s -u "$SONAR_TOKEN:" \
-              "https://sonarcloud.io/api/measures/component?component=$KEY&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density" \
-              -o metrics.json
-            BUGS=$(jq -r '.component.measures[] | select(.metric=="bugs") | .value' metrics.json)
-            VULNS=$(jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value' metrics.json)
-            SMELLS=$(jq -r '.component.measures[] | select(.metric=="code_smells") | .value' metrics.json)
-            COVERAGE=$(jq -r '.component.measures[] | select(.metric=="coverage") | .value' metrics.json)
-            DUP=$(jq -r '.component.measures[] | select(.metric=="duplicated_lines_density") | .value' metrics.json)
-
-            # Fetch issues per file
-            ISSUES=$(curl -s -u "$SONAR_TOKEN:" \
-              "https://sonarcloud.io/api/issues/search?component=$KEY&ps=500" | jq '.issues')
-
-            REPORT=$(jq -n \
-              --arg project "$KEY" \
-              --arg status "$STATUS" \
-              --arg bugs "$BUGS" \
-              --arg vulns "$VULNS" \
-              --arg smells "$SMELLS" \
-              --arg coverage "$COVERAGE" \
-              --arg dup "$DUP" \
-              --argjson issues "$ISSUES" \
-              '{project: $project, quality_gate: $status, bugs: $bugs, vulnerabilities: $vulns, code_smells: $smells, coverage: $coverage, duplication: $dup, issues: $issues}')
-            
-            ALL_REPORTS+=("$REPORT")
-          done
-
-          # Save all projects full JSON
-          jq -s '.' <<< "${ALL_REPORTS[@]}" > sonar_all_projects_full.json
-
-      # 🔟 Fail if ANY Quality Gate failed
-      - name: Enforce Quality Gate
-        run: |
-          FAILED=$(jq '[.[] | select(.quality_gate != "OK")] | length' sonar_all_projects_full.json)
-          if [ "$FAILED" -gt 0 ]; then
-            echo "❌ One or more projects FAILED Quality Gate!"
-            jq '.[] | select(.quality_gate != "OK")' sonar_all_projects_full.json
+            "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react" \
+            -o sonar_reports/qg.json
+          STATUS=$(jq -r '.projectStatus.status' sonar_reports/qg.json)
+          echo "Quality Gate Status: $STATUS"
+          if [ "$STATUS" != "OK" ]; then
+            echo "❌ Quality Gate failed!"
             exit 1
-          else
-            echo "✅ All projects PASSED Quality Gates."
+          fi
+          echo "✅ Quality Gate passed."
 
-      # 1️⃣1️⃣ Upload full Sonar Report JSON
+      # 9️⃣ Upload Sonar Report JSON
       - name: Upload Sonar Report Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sonar-all-projects-full
-          path: sonar_all_projects_full.json
+          name: sonar-report
+          path: sonar_reports/qg.json
 
-      # 1️⃣2️⃣ Notify Teams
-      - name: Notify Teams
-        if: always()
-        env:
-          WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
-        run: |
-          FACTS=$(jq -r '.[] | "- **Project:** \(.project)\n  • Quality Gate: \(.quality_gate)\n  • Bugs: \(.bugs)\n  • Vulnerabilities: \(.vulnerabilities)\n  • Code Smells: \(.code_smells)\n  • Coverage: \(.coverage)%\n  • Duplication: \(.duplication)%\n  • Issues Count: \(.issues | length)\n"' sonar_all_projects_full.json)
-          
-          payload=$(jq -n \
-            --arg title "🚦 SonarCloud CI/CD Quality Gate Report (All Projects)" \
-            --arg facts "$FACTS" \
-            --arg dash "https://sonarcloud.io/organizations/radhaigude/projects" \
-            '{
-              "@type": "MessageCard",
-              "@context": "http://schema.org/extensions",
-              "themeColor": "0076D7",
-              "summary": "SonarCloud Quality Gate Report",
-              "sections": [{
-                "activityTitle": $title,
-                "text": $facts,
-                "markdown": true
-              }],
-              "potentialAction": [{
-                "@type": "OpenUri",
-                "name": "🔗 View Dashboard",
-                "targets": [{ "os": "default", "uri": $dash }]
-              }]
-            }')
-          curl -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
+      
