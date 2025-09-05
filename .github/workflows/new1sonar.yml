@@ -20,11 +20,11 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # 1️⃣ Checkout repository (with full history for SonarCloud)
+      # 1️⃣ Checkout repository (fix shallow clone & ref)
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # 🚀 Fetch full history (fixes shallow clone & ref not found)
+          fetch-depth: 0
 
       # 2️⃣ Tooling (Node + jq)
       - name: Set up Node.js
@@ -35,7 +35,7 @@ jobs:
       - name: Install jq
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq
+          sudo apt-get install -y jq curl
 
       # 3️⃣ Cache Node modules
       - name: Cache Node modules
@@ -77,6 +77,7 @@ jobs:
             -Dsonar.sources=.
             -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**,**/*.spec.ts,**/*.spec.tsx,**/*.test.ts,**/*.test.tsx,**/*.test.js
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+            -Dsonar.python.version=3.11   # ✅ precise python version
 
       # 8️⃣ Wait for SonarCloud Quality Gate
       - name: Wait for SonarCloud Quality Gate
@@ -100,40 +101,61 @@ jobs:
             fi
           done
 
-      # 9️⃣ Notify Teams with MessageCard (metrics + links)
+      # 9️⃣ Fetch Sonar metrics (bugs, vulns, smells, coverage, duplication)
+      - name: Fetch Sonar Metrics
+        id: sonar_metrics
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          curl -s -u "$SONAR_TOKEN:" \
+            "https://sonarcloud.io/api/measures/component?component=RADhaigude_invoice-generator-react&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density" \
+            -o sonar_metrics.json
+          BUGS=$(jq -r '.component.measures[] | select(.metric=="bugs") | .value' sonar_metrics.json)
+          VULNS=$(jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value' sonar_metrics.json)
+          SMELLS=$(jq -r '.component.measures[] | select(.metric=="code_smells") | .value' sonar_metrics.json)
+          COVERAGE=$(jq -r '.component.measures[] | select(.metric=="coverage") | .value' sonar_metrics.json)
+          DUP=$(jq -r '.component.measures[] | select(.metric=="duplicated_lines_density") | .value' sonar_metrics.json)
+
+          echo "bugs=$BUGS" >> $GITHUB_OUTPUT
+          echo "vulns=$VULNS" >> $GITHUB_OUTPUT
+          echo "smells=$SMELLS" >> $GITHUB_OUTPUT
+          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
+          echo "dup=$DUP" >> $GITHUB_OUTPUT
+
+      # 🔟 Notify Teams with MessageCard
       - name: Notify Teams
         if: always()
         env:
           WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
           STATUS="${{ steps.quality_gate.outputs.status }}"
-          echo "SonarCloud Quality Gate Status: $STATUS"
+          BUGS="${{ steps.sonar_metrics.outputs.bugs }}"
+          VULNS="${{ steps.sonar_metrics.outputs.vulns }}"
+          SMELLS="${{ steps.sonar_metrics.outputs.smells }}"
+          COVERAGE="${{ steps.sonar_metrics.outputs.coverage }}"
+          DUP="${{ steps.sonar_metrics.outputs.dup }}"
+
+          if [ "$STATUS" = "OK" ]; then
+            RESULT="✅ PASSED"
+          else
+            RESULT="❌ FAILED"
+          fi
+
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             TARGET="Pull Request #${{ github.event.pull_request.number }}"
           else
             TARGET="Branch ${GITHUB_REF_NAME}"
           fi
-          BUGS=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="bugs") | .actualValue' sonar_quality_gate.json)
-          VULNS=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="vulnerabilities") | .actualValue' sonar_quality_gate.json)
-          SMELLS=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="code_smells") | .actualValue' sonar_quality_gate.json)
-          COVERAGE=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="coverage") | .actualValue' sonar_quality_gate.json)
-          DUPLICATION=$(jq -r '.projectStatus.conditions[] | select(.metricKey=="duplicated_lines_density") | .actualValue' sonar_quality_gate.json)
-          if [ "$STATUS" = "OK" ]; then
-            RESULT="✅ PASSED"
-            COLOR="2EB886"
-          else
-            RESULT="❌ FAILED"
-            COLOR="E74C3C"
-          fi
+
           payload=$(jq -n \
-            --arg title "🚦 SonarCloud CI/CD Pipeline" \
+            --arg title "🚦 SonarCloud CI/CD Quality Gate Report" \
             --arg target "$TARGET" \
             --arg result "$RESULT" \
             --arg bugs "$BUGS" \
             --arg vulns "$VULNS" \
             --arg smells "$SMELLS" \
             --arg coverage "$COVERAGE%" \
-            --arg dup "$DUPLICATION%" \
+            --arg dup "$DUP%" \
             --arg dash "https://sonarcloud.io/project/overview?id=RADhaigude_invoice-generator-react" \
             '{
               "@type": "MessageCard",
@@ -156,10 +178,9 @@ jobs:
               "potentialAction": [{
                 "@type": "OpenUri",
                 "name": "🔗 View Dashboard",
-                "targets": [
-                  { "os": "default", "uri": $dash }
-                ]
+                "targets": [{ "os": "default", "uri": $dash }]
               }]
             }')
+
           echo "Sending MessageCard to Teams..."
           curl -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
