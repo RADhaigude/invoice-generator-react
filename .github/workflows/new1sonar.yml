@@ -86,16 +86,20 @@ jobs:
         env:
           NODE_OPTIONS: --openssl-legacy-provider
 
-           # 9️⃣ SonarCloud Scan
+                 # 7️⃣ SonarCloud Scan
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
-            -Dsonar.projectKey=${{ env.PROJECT_KEY }}
-            -Dsonar.organization=${{ env.ORG }}
+            -Dsonar.projectKey=RADhaigude_invoice-generator-react
+            -Dsonar.organization=radhaigude
             -Dsonar.sources=.
             -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**,**/*.spec.ts,**/*.spec.tsx,**/*.test.ts,**/*.test.tsx,**/*.test.js
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+            -Dsonar.python.version=3.11
+
 
             # 1️⃣1️⃣ Download SonarCloud Reports safely
       - name: Download SonarCloud Reports
