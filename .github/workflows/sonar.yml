@@ -4,49 +4,39 @@ on:
   push:
     branches: [ dev, master ]
   pull_request:
-    branches: [ master ]  # adjust if you want PRs into dev too
+    branches: [ master ]
 
 permissions:
   contents: read
-  pull-requests: write   # allows PR comments
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  pull-requests: write
 
 jobs:
   sonarcloud:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout repository
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2️⃣ Setup Node.js (if your project is Node-based)
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "18"
 
-      # 3️⃣ Install dependencies
       - name: Install dependencies
         run: npm install
 
-      # 4️⃣ Run SonarCloud Scan
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-      # 5️⃣ Download Sonar Quality Gate status
       - name: Get Quality Gate
         run: |
           curl -s -u ${{ secrets.SONAR_TOKEN }}: \
           "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react" \
           -o sonar_quality_gate.json
 
-      # 6️⃣ Fail pipeline if Quality Gate = ERROR
       - name: Enforce Quality Gate
         run: |
           STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json)
@@ -56,14 +46,12 @@ jobs:
             exit 1
           fi
 
-      # 7️⃣ Generate SonarCloud Reports
       - name: Generate Reports
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           python3 -m pip install requests openpyxl python-docx pypandoc lxml
-
-          python3 - <<EOF
+          cat <<'EOF' | python3
 import requests
 import os
 import csv
@@ -118,7 +106,6 @@ pypandoc.convert_text(md,"rtf",format="md",outputfile="sonar_report.rtf",extra_a
 print("✅ Reports generated")
 EOF
 
-      # 8️⃣ Upload reports as artifacts
       - name: Upload Reports
         uses: actions/upload-artifact@v4
         with:
