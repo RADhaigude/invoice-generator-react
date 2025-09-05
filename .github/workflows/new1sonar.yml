@@ -79,7 +79,7 @@ jobs:
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
             -Dsonar.python.version=3.11
 
-      # 8️⃣ Fetch ALL project analyses + full file-level reports
+            # 8️⃣ Fetch ALL project analyses + full file-level reports
       - name: Fetch full SonarCloud project reports
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -96,6 +96,65 @@ jobs:
 
           for KEY in $PROJECT_KEYS; do
             echo "🔍 Collecting full report for $KEY"
+
+            # Wait for Quality Gate
+            for i in {1..15}; do
+              curl -s -u "$SONAR_TOKEN:" \
+                "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$KEY" \
+                -o qg.json || true
+              STATUS=$(jq -r '.projectStatus.status // empty' qg.json)
+              if [ -n "$STATUS" ]; then
+                echo "✅ Quality Gate: $STATUS"
+                break
+              else
+                echo "⏳ Waiting for results... retrying in 15s"
+                sleep 15
+              fi
+            done
+
+            # Metrics
+            curl -s -u "$SONAR_TOKEN:" \
+              "https://sonarcloud.io/api/measures/component?component=$KEY&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density" \
+              -o metrics.json
+
+            # Issues (all, paginated)
+            echo "[]" > issues.json
+            PAGE=1
+            while true; do
+              RESP=$(curl -s -u "$SONAR_TOKEN:" \
+                "https://sonarcloud.io/api/issues/search?componentKeys=$KEY&ps=500&p=$PAGE")
+              COUNT=$(echo "$RESP" | jq '.issues | length')
+              if [ "$COUNT" -eq 0 ]; then break; fi
+              jq -s '.[0] + .[1]' issues.json <(echo "$RESP" | jq '.issues') > tmp.json
+              mv tmp.json issues.json
+              PAGE=$((PAGE+1))
+            done
+
+            # Coverage
+            curl -s -u "$SONAR_TOKEN:" \
+              "https://sonarcloud.io/api/measures/component_tree?component=$KEY&metricKeys=coverage,line_coverage,uncovered_lines&ps=500" \
+              -o coverage.json
+
+            # Duplications & hotspots
+            curl -s -u "$SONAR_TOKEN:" \
+              "https://sonarcloud.io/api/measures/component?component=$KEY&metricKeys=duplicated_lines,duplicated_blocks,security_hotspots" \
+              -o extra.json
+
+            # Combine into one report
+            jq -n \
+              --slurpfile metrics metrics.json \
+              --slurpfile issues issues.json \
+              --slurpfile coverage coverage.json \
+              --slurpfile extra extra.json \
+              --arg project "$KEY" \
+              --arg status "$STATUS" \
+              '{project: $project, quality_gate: $status, metrics: $metrics[0].component, issues: $issues, coverage: $coverage[0], extra: $extra[0]}' \
+              > sonar_reports/${KEY}_full_report.json
+          done
+
+          # Merge all project reports
+          jq -s '.' sonar_reports/*_full_report.json > sonar_all_projects_full.json
+
 
             # 1️⃣ Wait for Quality Gate
             for i in {1..15}; do
