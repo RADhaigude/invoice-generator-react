@@ -63,7 +63,7 @@ jobs:
         env:
           NODE_OPTIONS: --openssl-legacy-provider
 
-       # 7️⃣ SonarCloud Scan
+      # 7️⃣ SonarCloud Scan
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v2
         env:
@@ -75,29 +75,28 @@ jobs:
             -Dsonar.sources=.
             -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**,**/*.spec.ts,**/*.spec.tsx,**/*.test.ts,**/*.test.tsx,**/*.test.js
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
-            
-      # 8️⃣ Wait for SonarCloud Quality Gate (with retries)
-      - name: Fetch SonarCloud Quality Gate
-        id: quality_gate
+
+      # 8️⃣ Wait for SonarCloud Quality Gate
+      - name: Wait for SonarCloud Quality Gate
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          echo "⏳ Waiting for SonarCloud analysis result..."
-          for i in {1..20}; do
+          echo "⏳ Waiting for SonarCloud analysis to complete..."
+          for i in {1..10}; do
             curl -s -u "$SONAR_TOKEN:" \
               "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react" \
               -o sonar_quality_gate.json || true
 
-            if jq -e '.projectStatus.status' sonar_quality_gate.json > /dev/null 2>&1; then
-              STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json)
-              echo "✅ Quality Gate Status: $STATUS"
-              echo "status=$STATUS" >> $GITHUB_OUTPUT
+            if grep -q '"status"' sonar_quality_gate.json; then
+              echo "✅ Quality Gate JSON received"
+              cat sonar_quality_gate.json
               break
             else
-              echo "⚠️ Still waiting for analysis... retrying in 15s"
+              echo "⚠️ Not ready yet... retrying in 15s"
               sleep 15
             fi
           done
+
 
       # 9️⃣ Notify Teams with Quality Gate Result
       - name: Notify Teams
