@@ -1,4 +1,4 @@
-name: CI / SonarCloud + Report + Notification
+name: CI / SonarCloud + Reports + Teams Notification
 
 on:
   push:
@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  sonar-scan:
+  sonar-ci:
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -24,7 +24,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2️⃣ Node & tools
+      # 2️⃣ Setup Node.js & tools
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -35,11 +35,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq pandoc
 
-      # 3️⃣ Install deps
+      # 3️⃣ Install dependencies
       - name: Install dependencies
         run: npm ci
 
-      # 4️⃣ Tests + coverage
+      # 4️⃣ Run tests with coverage
       - name: Run tests with coverage
         run: |
           npm install --save-dev jest-canvas-mock
@@ -48,7 +48,7 @@ jobs:
             --json --outputFile=jest-results.json \
             --coverageReporters=text --coverageReporters=lcov || echo "⚠️ Tests failed"
 
-      # 5️⃣ Build app
+      # 5️⃣ Build project
       - name: Build
         run: CI=false npm run build --if-present
         env:
@@ -84,14 +84,17 @@ jobs:
           fi
           cat sonar_quality_gate.json
 
-      # 8️⃣ Generate full project report
+      # 8️⃣ Generate Reports
       - name: Generate Reports
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           python3 -m pip install requests openpyxl python-docx pypandoc lxml
           python3 <<'EOF'
-import requests, os, csv, base64
+import requests
+import os
+import csv
+import base64
 from openpyxl import Workbook
 from docx import Document
 import pypandoc
@@ -99,39 +102,54 @@ import pypandoc
 token = os.getenv("SONAR_TOKEN")
 project = "RADhaigude_invoice-generator-react"
 metrics = "bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,reliability_rating,security_rating,sqale_rating,ncloc,cognitive_complexity"
+
 url = f"https://sonarcloud.io/api/measures/component?component={project}&metricKeys={metrics}"
 headers = {"Authorization": "Basic " + base64.b64encode(f"{token}:".encode()).decode()}
 r = requests.get(url, headers=headers)
+if r.status_code != 200:
+    print("❌ Failed to fetch metrics:", r.text)
+    exit(1)
+
 data = r.json()["component"]["measures"]
 
 # CSV
 with open("sonar_report.csv","w",newline="") as f:
-    w=csv.writer(f); w.writerow(["Metric","Value"])
-    for m in data: w.writerow([m["metric"],m.get("value","")])
+    w=csv.writer(f)
+    w.writerow(["Metric","Value"])
+    for m in data:
+        w.writerow([m["metric"],m.get("value","")])
 
 # XLSX
-wb=Workbook(); ws=wb.active; ws.title="Sonar"
+wb=Workbook()
+ws=wb.active
+ws.title="Sonar"
 ws.append(["Metric","Value"])
-for m in data: ws.append([m["metric"],m.get("value","")])
+for m in data:
+    ws.append([m["metric"],m.get("value","")])
 wb.save("sonar_report.xlsx")
 
 # DOCX
-doc=Document(); doc.add_heading("SonarCloud Report",0)
-t=doc.add_table(rows=1,cols=2); hdr=t.rows[0].cells
+doc=Document()
+doc.add_heading("SonarCloud Report",0)
+t=doc.add_table(rows=1,cols=2)
+hdr=t.rows[0].cells
 hdr[0].text,hdr[1].text="Metric","Value"
-for m in data: row=t.add_row().cells; row[0].text,row[1].text=m["metric"],m.get("value","")
+for m in data:
+    row=t.add_row().cells
+    row[0].text,row[1].text=m["metric"],m.get("value","")
 doc.save("sonar_report.docx")
 
 # Markdown + RTF
 md="# SonarCloud Report\n\n| Metric | Value |\n|--------|-------|\n"
-for m in data: md+=f"| {m['metric']} | {m.get('value','')} |\n"
+for m in data:
+    md+=f"| {m['metric']} | {m.get('value','')} |\n"
 open("sonar_report.md","w").write(md)
 pypandoc.convert_text(md,"rtf",format="md",outputfile="sonar_report.rtf",extra_args=["--standalone"])
 print("✅ Reports generated")
 EOF
 
-      # 9️⃣ Send Teams notification on PR
-      - name: Notify via Teams (PR only)
+      # 9️⃣ Notify Teams (only on PRs)
+      - name: Notify via Teams
         if: github.event_name == 'pull_request'
         env:
           WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
@@ -140,11 +158,24 @@ EOF
           BRANCH=${{ github.head_ref }}
           REPO=${{ github.repository }}
           PR=${{ github.event.pull_request.number }}
-          MSG="PR #$PR on $REPO ($BRANCH) - Quality Gate: $STATUS"
+          URL="https://sonarcloud.io/project/overview?id=RADhaigude_invoice-generator-react"
+          MSG="PR #$PR on $REPO ($BRANCH) - Quality Gate: $STATUS. [View Report]($URL)"
           payload=$(jq -n --arg title "SonarCloud CI Result" --arg text "$MSG" '{title:$title,text:$text}')
           curl -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
 
-      # 🔟 Upload artifacts
+      # 🔟 Fail if Quality Gate fails (protect master)
+      - name: Fail if Quality Gate fails
+        if: |
+          (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+          (github.event_name == 'pull_request' && github.base_ref == 'master')
+        run: |
+          STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json)
+          if [ "$STATUS" != "OK" ]; then
+            echo "❌ Quality Gate is $STATUS. Blocking merge to master."
+            exit 1
+          fi
+
+      # 1️⃣1️⃣ Upload artifacts
       - name: Upload Reports
         uses: actions/upload-artifact@v4
         with:
