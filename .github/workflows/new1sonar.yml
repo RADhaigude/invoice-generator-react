@@ -2,135 +2,136 @@ name: CI / SonarCloud Scan
 
 on:
   push:
-    branches:
-      - dev
+    branches: dev
   pull_request:
-    branches:
-      - dev
+    branches: dev
 
 permissions:
   contents: read
   pull-requests: write
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  build-test-scan:
+  sonarcloud-quality-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
-    env:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      ORG: radhaigude
-      PROJECT_KEY: RADhaigude_invoice-generator-react
+    timeout-minutes: 25
 
     steps:
-      # 1️⃣ Checkout
+      # 1️⃣ Checkout repository
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
+
+      # 2️⃣ Set up Java (required by SonarScanner)
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
         with:
-          fetch-depth: 0
+          distribution: temurin
+          java-version: 17
 
-      # 2️⃣ Node.js setup
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      # 3️⃣ Install dependencies (if Node.js project)
+      - name: Install Node.js
+        uses: actions/setup-node@v3
         with:
-          node-version: '18'
-          cache: 'npm'
+          node-version: 20
+      - run: npm install
 
-      # 3️⃣ Cache Node modules
-      - name: Cache Node modules
-        uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
-
-      # 4️⃣ Install dependencies
-      - name: Install dependencies
-        run: npm ci
-
-      # 5️⃣ Fix vulnerabilities
-      - name: Fix vulnerabilities
-        run: npm audit fix || echo "⚠️ Some vulnerabilities could not be fixed automatically"
-
-      # 6️⃣ Ensure dev dependencies
-      - name: Ensure dev dependencies
-        run: npm install --save-dev jest jest-canvas-mock @babel/preset-react || echo "Dependencies already installed"
-
-      # 7️⃣ Setup Jest + Babel configs
-      - name: Setup testing configs
-        run: |
-          mkdir -p src
-          echo "import 'jest-canvas-mock';" > src/setupTests.js
-          echo '{
-            "presets": ["@babel/preset-env", "@babel/preset-react"]
-          }' > babel.config.json
-
-      # 8️⃣ Run tests with coverage
-      - name: Run tests with coverage
-        run: |
-          npx jest --coverage --watchAll=false --passWithNoTests --bail=0 \
-            --json --outputFile=jest-results.json \
-            --coverageReporters=text --coverageReporters=lcov --coverageReporters=html || echo "⚠️ Some tests failed, continuing..."
-
-      # 9️⃣ Build project
-      - name: Build project
-        run: CI=false npm run build --if-present
-        env:
-          NODE_OPTIONS: --openssl-legacy-provider
-
-      # 🔟 SonarCloud scan
+      # 4️⃣ Run SonarCloud Scan
       - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@v2
+        id: sonar_scan
+        uses: SonarSource/sonarcloud-github-action@master
         with:
-          args: >
-            -Dsonar.projectKey=${{ env.PROJECT_KEY }}
-            -Dsonar.organization=${{ env.ORG }}
-            -Dsonar.sources=.
-            -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**,**/*.spec.ts,**/*.spec.tsx,**/*.test.ts,**/*.test.tsx,**/*.test.js
-            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+          projectKey: RADhaigude_invoice-generator-react
+          organization: YOUR_ORG
+          token: ${{ secrets.SONAR_TOKEN }}
 
-      # 1️⃣1️⃣ Download SonarCloud JSON reports only
-      - name: Download SonarCloud Reports (JSON)
+      # 5️⃣ Fetch SonarCloud Quality Gate results
+      - name: Get Quality Gate Status
+        id: sonar_results
         run: |
-          mkdir -p sonar_reports
-          cat > download_sonar_reports.py << 'EOF'
-          import requests, os, json, base64
-          SONAR_TOKEN = os.environ['SONAR_TOKEN']
-          PROJECT_KEY = os.environ['PROJECT_KEY']
-          auth_header = base64.b64encode(f"{SONAR_TOKEN}:".encode()).decode()
-          headers = {'Authorization': f'Basic {auth_header}'}
+          STATUS=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
+            "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react" \
+            | jq -r '.projectStatus.status')
+          BUGS=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
+            "https://sonarcloud.io/api/measures/component?component=RADhaigude_invoice-generator-react&metricKeys=bugs" \
+            | jq -r '.component.measures[0].value')
+          VULNS=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
+            "https://sonarcloud.io/api/measures/component?component=RADhaigude_invoice-generator-react&metricKeys=vulnerabilities" \
+            | jq -r '.component.measures[0].value')
+          SMELLS=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
+            "https://sonarcloud.io/api/measures/component?component=RADhaigude_invoice-generator-react&metricKeys=code_smells" \
+            | jq -r '.component.measures[0].value')
+          COVERAGE=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
+            "https://sonarcloud.io/api/measures/component?component=RADhaigude_invoice-generator-react&metricKeys=coverage" \
+            | jq -r '.component.measures[0].value')
+          DUP=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
+            "https://sonarcloud.io/api/measures/component?component=RADhaigude_invoice-generator-react&metricKeys=duplicated_lines_density" \
+            | jq -r '.component.measures[0].value')
 
-          # Quality Gate
-          qg_url = f'https://sonarcloud.io/api/qualitygates/project_status?projectKey={PROJECT_KEY}'
-          qg_resp = requests.get(qg_url, headers=headers)
-          if qg_resp.ok:
-              with open('sonar_reports/quality_gate.json', 'w') as f:
-                  json.dump(qg_resp.json(), f, indent=4)
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "bugs=$BUGS" >> $GITHUB_OUTPUT
+          echo "vulns=$VULNS" >> $GITHUB_OUTPUT
+          echo "smells=$SMELLS" >> $GITHUB_OUTPUT
+          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
+          echo "dup=$DUP" >> $GITHUB_OUTPUT
 
-          # Quality Rules
-          rules_url = 'https://sonarcloud.io/api/rules/search?languages=js'
-          rules_resp = requests.get(rules_url, headers=headers)
-          if rules_resp.ok:
-              with open('sonar_reports/quality_rules.json', 'w') as f:
-                  json.dump(rules_resp.json(), f, indent=4)
-
-          # Metrics
-          measures_url = f'https://sonarcloud.io/api/measures/component?component={PROJECT_KEY}&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,ncloc'
-          measures_resp = requests.get(measures_url, headers=headers)
-          if measures_resp.ok:
-              with open('sonar_reports/measures.json', 'w') as f:
-                  json.dump(measures_resp.json(), f, indent=4)
-          EOF
-          python3 download_sonar_reports.py || echo "⚠️ Python script failed, continuing..."
-
-      # 1️⃣2️⃣ Upload reports
-      - name: Upload SonarCloud Reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: SonarCloudReports
-          path: sonar_reports
+      # 6️⃣ Notify Teams with MessageCard
+      - name: Notify Teams
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          STATUS="${{ steps.sonar_results.outputs.status }}"
+          BUGS="${{ steps.sonar_results.outputs.bugs }}"
+          VULNS="${{ steps.sonar_results.outputs.vulns }}"
+          SMELLS="${{ steps.sonar_results.outputs.smells }}"
+          COVERAGE="${{ steps.sonar_results.outputs.coverage }}"
+          DUP="${{ steps.sonar_results.outputs.dup }}"
+          
+          if [ "$STATUS" = "OK" ]; then
+            RESULT="✅ PASSED"
+          else
+            RESULT="❌ FAILED"
+          fi
+          
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            TARGET="Pull Request #${{ github.event.pull_request.number }}"
+          else
+            TARGET="Branch ${GITHUB_REF_NAME}"
+          fi
+          
+          payload=$(jq -n \
+            --arg title "🚦 SonarCloud CI/CD Quality Gate Report" \
+            --arg target "$TARGET" \
+            --arg result "$RESULT" \
+            --arg bugs "$BUGS" \
+            --arg vulns "$VULNS" \
+            --arg smells "$SMELLS" \
+            --arg coverage "$COVERAGE%" \
+            --arg dup "$DUP%" \
+            --arg dash "https://sonarcloud.io/project/overview?id=RADhaigude_invoice-generator-react" \
+            '{
+              "@type": "MessageCard",
+              "@context": "http://schema.org/extensions",
+              "themeColor": "0076D7",
+              "summary": "SonarCloud Quality Gate Report",
+              "sections": [{
+                "activityTitle": $title,
+                "activitySubtitle": "Target: \($target)",
+                "facts": [
+                  {"name": "Quality Gate", "value": $result},
+                  {"name": "Bugs", "value": $bugs},
+                  {"name": "Vulnerabilities", "value": $vulns},
+                  {"name": "Code Smells", "value": $smells},
+                  {"name": "Coverage", "value": $coverage},
+                  {"name": "Duplication", "value": $dup}
+                ],
+                "markdown": true
+              }],
+              "potentialAction": [{
+                "@type": "OpenUri",
+                "name": "🔗 View Dashboard",
+                "targets": [{ "os": "default", "uri": $dash }]
+              }]
+            }')
+          
+          echo "Sending MessageCard to Teams..."
+          curl -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
