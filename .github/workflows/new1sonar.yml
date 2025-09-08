@@ -34,15 +34,19 @@ jobs:
           node-version: 20
       - run: npm install
 
-      # 4️⃣ Run SonarCloud Scan
+     
+      # 5️⃣ SonarCloud Scan
       - name: SonarCloud Scan
-        id: sonar_scan
-        uses: SonarSource/sonarcloud-github-action@master
+        uses: SonarSource/sonarcloud-github-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
-          projectKey: RADhaigude_invoice-generator-react
-          organization: YOUR_ORG
-          token: ${{ secrets.SONAR_TOKEN }}
-
+          args: >
+            -Dsonar.projectKey=RADhaigude_invoice-generator-react
+            -Dsonar.organization=radhaigude
+            -Dsonar.sources=.
+            -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**,**/*.spec.ts,**/*.spec.tsx,**/*.test.ts,**/*.test.tsx,**/*.test.js
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
       # 5️⃣ Fetch SonarCloud Quality Gate results
       - name: Get Quality Gate Status
         id: sonar_results
