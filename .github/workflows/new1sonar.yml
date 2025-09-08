@@ -77,65 +77,44 @@ jobs:
           echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
           echo "dup=$DUP" >> $GITHUB_OUTPUT
 
-      # 6️⃣ Notify Teams with MessageCard
       - name: Notify Teams
-        if: always()
-        env:
-          WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
-        run: |
-          STATUS="${{ steps.sonar_results.outputs.status }}"
-          BUGS="${{ steps.sonar_results.outputs.bugs }}"
-          VULNS="${{ steps.sonar_results.outputs.vulns }}"
-          SMELLS="${{ steps.sonar_results.outputs.smells }}"
-          COVERAGE="${{ steps.sonar_results.outputs.coverage }}"
-          DUP="${{ steps.sonar_results.outputs.dup }}"
-          
-          if [ "$STATUS" = "OK" ]; then
-            RESULT="✅ PASSED"
-          else
-            RESULT="❌ FAILED"
-          fi
-          
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            TARGET="Pull Request #${{ github.event.pull_request.number }}"
-          else
-            TARGET="Branch ${GITHUB_REF_NAME}"
-          fi
-          
-          payload=$(jq -n \
-            --arg title "🚦 SonarCloud CI/CD Quality Gate Report" \
-            --arg target "$TARGET" \
-            --arg result "$RESULT" \
-            --arg bugs "$BUGS" \
-            --arg vulns "$VULNS" \
-            --arg smells "$SMELLS" \
-            --arg coverage "$COVERAGE%" \
-            --arg dup "$DUP%" \
-            --arg dash "https://sonarcloud.io/project/overview?id=RADhaigude_invoice-generator-react" \
-            '{
-              "@type": "MessageCard",
-              "@context": "http://schema.org/extensions",
-              "themeColor": "0076D7",
-              "summary": "SonarCloud Quality Gate Report",
-              "sections": [{
-                "activityTitle": $title,
-                "activitySubtitle": "Target: \($target)",
-                "facts": [
-                  {"name": "Quality Gate", "value": $result},
-                  {"name": "Bugs", "value": $bugs},
-                  {"name": "Vulnerabilities", "value": $vulns},
-                  {"name": "Code Smells", "value": $smells},
-                  {"name": "Coverage", "value": $coverage},
-                  {"name": "Duplication", "value": $dup}
-                ],
-                "markdown": true
-              }],
-              "potentialAction": [{
-                "@type": "OpenUri",
-                "name": "🔗 View Dashboard",
-                "targets": [{ "os": "default", "uri": $dash }]
-              }]
-            }')
-          
-          echo "Sending MessageCard to Teams..."
-          curl -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
+  if: always()
+  env:
+    WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+  run: |
+    STATUS="${{ steps.sonar_results.outputs.status }}"
+    if [ "$STATUS" = "OK" ]; then 
+      RESULT="✅ PASSED"
+      COLOR="0076D7"   # Blue/Green (success)
+    else 
+      RESULT="❌ FAILED"
+      COLOR="FF0000"   # Red (fail)
+    fi
+    TARGET="Branch ${GITHUB_REF_NAME}"
+
+    # Build facts dynamically from conditions
+    FACTS=$(echo '${{ steps.sonar_results.outputs.conditions }}' | jq -s 'map({
+      name: .metricKey,
+      value: (.actualValue + " (threshold: " + .errorThreshold + ", status: " + .status + ")")
+    })')
+
+    payload=$(jq -n \
+      --arg title "🚦 SonarCloud Quality Gate Report" \
+      --arg target "$TARGET" \
+      --arg result "$RESULT" \
+      --arg color "$COLOR" \
+      --argjson facts "$FACTS" \
+      '{
+        "@type": "MessageCard",
+        "@context": "http://schema.org/extensions",
+        "themeColor": $color,
+        "summary": "SonarCloud Quality Gate",
+        "sections": [{
+          "activityTitle": $title,
+          "activitySubtitle": "Target: \($target)",
+          "facts": [{"name": "Overall", "value": $result}] + $facts,
+          "markdown": true
+        }]
+      }')
+
+    curl -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
