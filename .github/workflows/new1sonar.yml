@@ -2,23 +2,31 @@ name: CI / SonarCloud Scan
 
 on:
   push:
-    branches: dev
+    branches:
+      - devops-CI-testing
   pull_request:
-    branches: dev
+    branches:
+      - devops-CI-testing
 
 permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   sonarcloud-quality-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
 
     steps:
-      # 1️⃣ Checkout repository
+      # 1️⃣ Checkout repository (full history)
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
       # 2️⃣ Set up Java (required by SonarScanner)
       - name: Set up JDK 17
@@ -27,15 +35,27 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      # 3️⃣ Install dependencies (if Node.js project)
-      - name: Install Node.js
+      # 3️⃣ Set up Node
+      - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
           node-version: 20
-      - run: npm install
 
-     
-      # 5️⃣ SonarCloud Scan
+      # 4️⃣ Install dependencies
+      - name: Install Node dependencies
+        run: npm ci
+
+      # 5️⃣ Run tests & generate coverage (adjust scripts if needed)
+      - name: Run tests and collect coverage
+        run: |
+          # adjust command if your project uses a different test command
+          npm test -- --coverage || true
+          # ensure lcov exists at coverage/lcov.info (sonar.javascript.lcov.reportPaths)
+          if [ ! -f coverage/lcov.info ]; then
+            echo "coverage/lcov.info not found — continuing (Sonar will ignore coverage if missing)"
+          fi
+
+     # 5️⃣ SonarCloud Scan
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v2
         env:
@@ -47,74 +67,156 @@ jobs:
             -Dsonar.sources=.
             -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**,**/*.spec.ts,**/*.spec.tsx,**/*.test.ts,**/*.test.tsx,**/*.test.js
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
-      # 5️⃣ Fetch SonarCloud Quality Gate results
-      - name: Get Quality Gate Status
-        id: sonar_results
-        run: |
-          STATUS=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
-            "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react" \
-            | jq -r '.projectStatus.status')
-          BUGS=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
-            "https://sonarcloud.io/api/measures/component?component=RADhaigude_invoice-generator-react&metricKeys=bugs" \
-            | jq -r '.component.measures[0].value')
-          VULNS=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
-            "https://sonarcloud.io/api/measures/component?component=RADhaigude_invoice-generator-react&metricKeys=vulnerabilities" \
-            | jq -r '.component.measures[0].value')
-          SMELLS=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
-            "https://sonarcloud.io/api/measures/component?component=RADhaigude_invoice-generator-react&metricKeys=code_smells" \
-            | jq -r '.component.measures[0].value')
-          COVERAGE=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
-            "https://sonarcloud.io/api/measures/component?component=RADhaigude_invoice-generator-react&metricKeys=coverage" \
-            | jq -r '.component.measures[0].value')
-          DUP=$(curl -s -u ${{ secrets.SONAR_TOKEN }}: \
-            "https://sonarcloud.io/api/measures/component?component=RADhaigude_invoice-generator-react&metricKeys=duplicated_lines_density" \
-            | jq -r '.component.measures[0].value')
 
+      # 7️⃣ Install jq (safety) and wait a short time for SonarCloud to process (optional small sleep)
+      - name: Prepare tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+          # slight pause to allow SonarCloud analysis to be available via API (small wait)
+          sleep 6
+
+      # 8️⃣ Fetch SonarCloud Quality Gate status and metrics
+      - name: Get Quality Gate + Metrics
+        id: sonar_results
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          PROJECT_KEY="dash-rutujad_hmmsfrontend"
+          AUTH="${SONAR_TOKEN}:"
+          # Project quality gate status & conditions
+          QG_RESPONSE=$(curl -s -u "$AUTH" "https://sonarcloud.io/api/qualitygates/project_status?projectKey=${PROJECT_KEY}")
+          echo "$QG_RESPONSE" | jq -c '.' > qg_response.json
+
+          STATUS=$(echo "$QG_RESPONSE" | jq -r '.projectStatus.status // "UNKNOWN"')
+          CONDITIONS=$(echo "$QG_RESPONSE" | jq -c '.projectStatus.conditions // []')
+
+          # Fetch common metrics (fallback / human-friendly)
+          METRICS=$(curl -s -u "$AUTH" "https://sonarcloud.io/api/measures/component?component=${PROJECT_KEY}&metricKeys=bugs,vulnerabilities,code_smells,security_hotspots,coverage,duplicated_lines_density,sqale_debt_ratio" )
+
+          # Extract metrics safely (if metric missing will output empty string)
+          BUGS=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="bugs") | .value' || true)
+          VULNS=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value' || true)
+          SMELLS=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="code_smells") | .value' || true)
+          HOTSPOTS=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="security_hotspots") | .value' || true)
+          COVERAGE=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="coverage") | .value' || true)
+          DUP=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="duplicated_lines_density") | .value' || true)
+          TECH_DEBT_RATIO=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="sqale_debt_ratio") | .value' || true)
+
+          # expose outputs to next step
           echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "conditions=$CONDITIONS" >> $GITHUB_OUTPUT
           echo "bugs=$BUGS" >> $GITHUB_OUTPUT
           echo "vulns=$VULNS" >> $GITHUB_OUTPUT
           echo "smells=$SMELLS" >> $GITHUB_OUTPUT
+          echo "hotspots=$HOTSPOTS" >> $GITHUB_OUTPUT
           echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
           echo "dup=$DUP" >> $GITHUB_OUTPUT
+          echo "tech_debt_ratio=$TECH_DEBT_RATIO" >> $GITHUB_OUTPUT
 
+      # 9️⃣ Notify Teams with a dynamic, human-friendly card
       - name: Notify Teams
-  if: always()
-  env:
-    WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
-  run: |
-    STATUS="${{ steps.sonar_results.outputs.status }}"
-    if [ "$STATUS" = "OK" ]; then 
-      RESULT="✅ PASSED"
-      COLOR="0076D7"   # Blue/Green (success)
-    else 
-      RESULT="❌ FAILED"
-      COLOR="FF0000"   # Red (fail)
-    fi
-    TARGET="Branch ${GITHUB_REF_NAME}"
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          PROJECT_KEY="dash-rutujad_hmmsfrontend"
+          SONAR_DASH="https://sonarcloud.io/project/overview?id=${PROJECT_KEY}"
+          STATUS="${{ steps.sonar_results.outputs.status }}"
+          CONDITIONS_RAW='${{ steps.sonar_results.outputs.conditions }}'
+          BUGS="${{ steps.sonar_results.outputs.bugs }}"
+          VULNS="${{ steps.sonar_results.outputs.vulns }}"
+          SMELLS="${{ steps.sonar_results.outputs.smells }}"
+          HOTSPOTS="${{ steps.sonar_results.outputs.hotspots }}"
+          COVERAGE="${{ steps.sonar_results.outputs.coverage }}"
+          DUP="${{ steps.sonar_results.outputs.dup }}"
+          TECH_DEBT="${{ steps.sonar_results.outputs.tech_debt_ratio }}"
 
-    # Build facts dynamically from conditions
-    FACTS=$(echo '${{ steps.sonar_results.outputs.conditions }}' | jq -s 'map({
-      name: .metricKey,
-      value: (.actualValue + " (threshold: " + .errorThreshold + ", status: " + .status + ")")
-    })')
+          # Build a readable build id like: YYYYMMDD.<run_number>
+          BUILD="$(date +%Y%m%d).${GITHUB_RUN_NUMBER}"
 
-    payload=$(jq -n \
-      --arg title "🚦 SonarCloud Quality Gate Report" \
-      --arg target "$TARGET" \
-      --arg result "$RESULT" \
-      --arg color "$COLOR" \
-      --argjson facts "$FACTS" \
-      '{
-        "@type": "MessageCard",
-        "@context": "http://schema.org/extensions",
-        "themeColor": $color,
-        "summary": "SonarCloud Quality Gate",
-        "sections": [{
-          "activityTitle": $title,
-          "activitySubtitle": "Target: \($target)",
-          "facts": [{"name": "Overall", "value": $result}] + $facts,
-          "markdown": true
-        }]
-      }')
+          if [ "$STATUS" = "OK" ] || [ "$STATUS" = "PASS" ]; then
+            RESULT="✅ PASSED"
+            COLOR="0076D7"
+          elif [ "$STATUS" = "UNKNOWN" ]; then
+            RESULT="⚠️ UNKNOWN"
+            COLOR="FFD700"
+          else
+            RESULT="❌ FAILED"
+            COLOR="FF0000"
+          fi
 
-    curl -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
+          # Convert conditions JSON into MessageCard facts (metric + actual (threshold, status))
+          # If CONDITIONS_RAW is empty string, make an empty array
+          if [ -z "$CONDITIONS_RAW" ] || [ "$CONDITIONS_RAW" = "null" ]; then
+            FACTS_JSON='[]'
+          else
+            FACTS_JSON=$(echo "$CONDITIONS_RAW" | jq -r '
+              map(
+                {
+                  name: ( .metricKey | if .=="sqale_debt_ratio" then "Technical Debt Ratio" 
+                                     elif .=="duplicated_lines_density" then "Duplicated Lines (%)"
+                                     elif .=="code_smells" then "Code Smells"
+                                     elif .=="security_hotspots" then "Security Hotspots"
+                                     elif .=="vulnerabilities" then "Vulnerabilities"
+                                     elif .=="bugs" then "Bugs"
+                                     elif .=="coverage" then "Coverage (%)"
+                                     else . end),
+                  value: (
+                    (if .actualValue==null then "N/A" else (.actualValue|tostring) end)
+                    + (
+                      if (.errorThreshold|tostring)!="null" then " (threshold: " + (.errorThreshold|tostring) + ", status: " + (.status|tostring) + ")" else ""
+                      end
+                    )
+                }
+              )
+            ')
+            # jq returns the array; ensure it's compact JSON for later injection
+            FACTS_JSON=$(echo "$FACTS_JSON" | jq -c '.')
+          fi
+
+          # If we have individual cleaned metrics, prepend them for clearer display (keeps order)
+          PREPEND_FACTS=$(jq -n '[]')
+          PREPEND_FACTS=$(echo "$PREPEND_FACTS" | jq --arg b "$BUGS" --arg v "$VULNS" --arg s "$SMELLS" --arg h "$HOTSPOTS" --arg c "$COVERAGE" --arg d "$DUP" --arg t "$TECH_DEBT" '
+            . + [
+              {"name":"Bugs","value":($b // "N/A")},
+              {"name":"Vulnerabilities","value":($v // "N/A")},
+              {"name":"Code Smells","value":($s // "N/A")},
+              {"name":"Security Hotspots","value":($h // "N/A")},
+              {"name":"Coverage (%)","value":($c // "N/A")},
+              {"name":"Duplication (%)","value":($d // "N/A")},
+              {"name":"Technical Debt Ratio (%)","value":($t // "N/A")}
+            ]')
+
+          # Merge prepended metrics + Sonar conditions (conditions may duplicate metrics but that's ok)
+          MERGED_FACTS=$(jq -n --argjson a "$PREPEND_FACTS" --argjson b "$FACTS_JSON" '$a + $b')
+
+          # Build the MessageCard payload
+          payload=$(jq -n \
+            --arg title "🚦 SonarCloud Quality Gate Report" \
+            --arg target "Branch ${GITHUB_REF#refs/heads/}" \
+            --arg result "$RESULT" \
+            --arg build "$BUILD" \
+            --arg dash "$SONAR_DASH" \
+            --arg color "$COLOR" \
+            --argjson facts "$MERGED_FACTS" \
+            '{
+              "@type": "MessageCard",
+              "@context": "http://schema.org/extensions",
+              "themeColor": $color,
+              "summary": "SonarCloud Quality Gate",
+              "sections": [{
+                "activityTitle": $title,
+                "activitySubtitle": ("Target: " + $target),
+                "facts": ([{"name":"Quality Gate","value":$result},{"name":"Build","value":$build}] + $facts),
+                "markdown": true
+              }],
+              "potentialAction": [{
+                "@type": "OpenUri",
+                "name": "🔗 View Full Report on SonarCloud",
+                "targets": [{ "os": "default", "uri": $dash }]
+              }]
+            }')
+
+          echo "Sending MessageCard to Teams..."
+          curl -s -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL" || echo "Teams notify failed"
