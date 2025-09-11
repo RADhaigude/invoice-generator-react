@@ -1,130 +1,53 @@
 
-name: CI / SonarCloud PR Scan (Invoice Generator)
+name: SonarCloud Scan
 
 on:
+  push:
+    branches:
+      - master
   pull_request:
     branches:
-      - dev   # Run only when PR targets dev branch
-
-permissions:
-  contents: read
-  pull-requests: write
+      - master
 
 jobs:
-  sonarcloud-pr:
+  sonarcloud:
+    name: SonarCloud
     runs-on: ubuntu-latest
-    timeout-minutes: 25
 
     steps:
-      # 1️⃣ Checkout repository
+      # 1️⃣ Checkout repo
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2️⃣ Set up Java (required for Sonar scanner)
-      - name: Set up Java
-        uses: actions/setup-java@v3
-        with:
-          distribution: temurin
-          java-version: 17
-
-      # 3️⃣ Set up Node.js (for React project)
+      # 2️⃣ Set up Node.js
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '18'
 
-      # 4️⃣ Install dependencies
+      # 3️⃣ Install dependencies
       - name: Install dependencies
         run: npm install
 
-      # 5️⃣ SonarCloud Scan (PR Decoration only)
+      # 4️⃣ Run tests with coverage
+      - name: Run tests with coverage
+        run: npm test -- --coverage --watchAll=false
+
+      # 5️⃣ SonarCloud Scan
       - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@v2
+        uses: SonarSource/sonarcloud-github-action@master
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # required for PR decoration
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # needed for PR decoration
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: "https://sonarcloud.io"
         with:
           args: >
             -Dsonar.projectKey=RADhaigude_invoice-generator-react
             -Dsonar.organization=radhaigude
-            -Dsonar.sources=.
-            -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**,**/*.spec.ts,**/*.spec.tsx,**/*.test.ts,**/*.test.tsx,**/*.test.js
+            -Dsonar.sources=src
+            -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
             -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
             -Dsonar.pullrequest.branch=${{ github.head_ref }}
             -Dsonar.pullrequest.base=${{ github.base_ref }}
-
-      # 6️⃣ Notify Teams with PR Quality Gate result
-      - name: Notify Teams
-        if: always()
-        env:
-          WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-
-          # ✅ Fetch PR Quality Gate status
-          STATUS=$(curl -s -u $SONAR_TOKEN: \
-            "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react&pullRequest=$PR_NUMBER" \
-            | jq -r '.projectStatus.status')
-
-          RESULT="❌ FAILED"
-          COLOR="FF0000"
-          if [ "$STATUS" = "OK" ]; then
-            RESULT="✅ PASSED"
-            COLOR="0076D7"
-          fi
-
-          TARGET="Pull Request #$PR_NUMBER → ${{ github.base_ref }}"
-          PROJECT_LINK="https://sonarcloud.io/dashboard?id=RADhaigude_invoice-generator-react&pullRequest=$PR_NUMBER"
-
-          # ✅ Fetch detailed PR measures
-          METRICS=$(curl -s -u $SONAR_TOKEN: \
-            "https://sonarcloud.io/api/measures/component?component=RADhaigude_invoice-generator-react&pullRequest=$PR_NUMBER&metricKeys=new_lines,bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,security_hotspots")
-
-          NEW_LINES=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="new_lines") | .value // "0"')
-          BUGS=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="bugs") | .value // "0"')
-          VULNS=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value // "0"')
-          SMELLS=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="code_smells") | .value // "0"')
-          COVERAGE=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="coverage") | .value // "N/A"')
-          DUP=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="duplicated_lines_density") | .value // "0"')
-          HOTSPOTS=$(echo "$METRICS" | jq -r '.component.measures[] | select(.metric=="security_hotspots") | .value // "0"')
-
-          # ✅ Format Teams message
-          FACTS=$(jq -n \
-            --arg result "$RESULT" \
-            --arg newlines "$NEW_LINES" \
-            --arg bugs "$BUGS" \
-            --arg vulns "$VULNS" \
-            --arg smells "$SMELLS" \
-            --arg coverage "$COVERAGE" \
-            --arg dup "$DUP%" \
-            --arg hotspots "$HOTSPOTS" \
-            '[{"name":"Quality Gate","value":$result},{"name":"New Lines","value":$newlines},{"name":"Bugs","value":$bugs},{"name":"Vulnerabilities","value":$vulns},{"name":"Code Smells","value":$smells},{"name":"Coverage","value":$coverage},{"name":"Duplications","value":$dup},{"name":"Security Hotspots","value":$hotspots}]')
-
-          payload=$(jq -n \
-            --arg title "🚦 SonarCloud PR Analysis - Invoice Generator React" \
-            --arg target "$TARGET" \
-            --arg color "$COLOR" \
-            --arg link "$PROJECT_LINK" \
-            --argjson facts "$FACTS" \
-            '{
-              "@type": "MessageCard",
-              "@context": "http://schema.org/extensions",
-              "themeColor": $color,
-              "summary": "SonarCloud Quality Gate",
-              "sections": [{
-                "activityTitle": $title,
-                "activitySubtitle": $target,
-                "facts": $facts,
-                "markdown": true
-              }],
-              "potentialAction": [{
-                "@type": "OpenUri",
-                "name": "🔗 Open in SonarCloud",
-                "targets": [{"os": "default", "uri": $link}]
-              }]
-            }')
-
-          curl -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL"
-
+            -Dsonar.verbose=true
