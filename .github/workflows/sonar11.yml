@@ -1,0 +1,41 @@
+name: CI / SonarCloud PR Scan
+
+on:
+  pull_request:        # 👈 important: must be PR event
+    branches:
+      - devops-QA-testing   # target branch for PRs
+
+jobs:
+  sonarcloud-pr:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests with coverage
+        run: npm run test -- --coverage || true
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # needed for PR decoration
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=dash-rutujad_hmmsfrontend
+            -Dsonar.organization=dash-rutujad
+            -Dsonar.sources=.
+            -Dsonar.exclusions=node_modules/**,dist/**,build/**,public/**
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+            -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
+            -Dsonar.pullrequest.branch=${{ github.head_ref }}
+            -Dsonar.pullrequest.base=${{ github.base_ref }}
