@@ -1,4 +1,4 @@
-name: CI / SonarCloud Scan
+name: SonarCloud Scan
 
 on:
   push:
@@ -6,14 +6,15 @@ on:
       - master
   pull_request:
     branches:
-      - master   # PR target branch
+      - master
 
 jobs:
   sonarcloud:
+    name: SonarCloud
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout code
+      # 1️⃣ Checkout repo
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -23,128 +24,29 @@ jobs:
         with:
           node-version: '18'
 
-      # 3️⃣ Cache Node.js dependencies
-      - name: Cache Node modules
-        uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
-
-      # 4️⃣ Install dependencies
+      # 3️⃣ Install dependencies
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
-      # 5️⃣ Run tests with coverage (pipeline continues even if no tests)
+      # 4️⃣ Run tests with coverage
       - name: Run tests with coverage
-        run: npm test -- --coverage --watchAll=false --passWithNoTests || true
+        run: npm test -- --coverage --watchAll=false
 
-      # 6️⃣ Build project
-      - name: Build project
-        run: |
-          CI=false npm run build --if-present
+      # 5️⃣ SonarCloud Scan
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
         env:
-          NODE_OPTIONS: --openssl-legacy-provider
-
-      # 7️⃣ SonarCloud Scan for branch pushes
-      - name: SonarCloud Scan (push)
-        if: github.event_name == 'push'
-        uses: SonarSource/sonarcloud-github-action@v2
-        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # needed for PR decoration
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: "https://sonarcloud.io"
         with:
           args: >
             -Dsonar.projectKey=RADhaigude_invoice-generator-react
             -Dsonar.organization=radhaigude
-            -Dsonar.sources=.
-
-      # 8️⃣ SonarCloud Scan for Pull Requests
-      - name: SonarCloud Scan (PR)
-        if: github.event_name == 'pull_request'
-        uses: SonarSource/sonarcloud-github-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # Required for PR decoration
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          args: >
-            -Dsonar.projectKey=RADhaigude_invoice-generator-react
-            -Dsonar.organization=radhaigude
-            -Dsonar.sources=.
-            -Dsonar.exclusions=node_modules/**,dist/**,build/**,public/**
+            -Dsonar.sources=src
+            -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
             -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
             -Dsonar.pullrequest.branch=${{ github.head_ref }}
             -Dsonar.pullrequest.base=${{ github.base_ref }}
-
-      # 9️⃣ Fetch Quality Gate JSON
-      - name: Fetch Quality Gate status
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            curl -s -u ${{ secrets.SONAR_TOKEN }}: \
-              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react&pullRequest=${{ github.event.pull_request.number }}" \
-              -o sonar_quality_gate.json
-          else
-            curl -s -u ${{ secrets.SONAR_TOKEN }}: \
-              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=RADhaigude_invoice-generator-react" \
-              -o sonar_quality_gate.json
-          fi
-          cat sonar_quality_gate.json
-
-      # 🔟 Convert JSON to HTML
-      - name: Convert Quality Gate JSON to HTML
-        run: |
-          echo "<html><head><title>SonarCloud Quality Gate</title><style>
-            body { font-family: Arial, sans-serif; margin: 20px; }
-            h1 { color: #333; }
-            .section { margin-bottom: 20px; border: 1px solid #ccc; border-radius: 6px; }
-            .header { padding: 8px; font-weight: bold; color: #fff; }
-            .failed { background-color: #e74c3c; }
-            .passed { background-color: #2ecc71; }
-            .skipped { background-color: #f1c40f; }
-            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-            th, td { border: 1px solid #ccc; padding: 6px; text-align: left; }
-          </style></head><body>" > sonar_quality_gate.html
-
-          STATUS=$(jq -r '.projectStatus.status' sonar_quality_gate.json)
-          echo "<h1>SonarCloud Quality Gate: $STATUS</h1>" >> sonar_quality_gate.html
-
-          # Failed
-          echo "<div class='section'><div class='header failed'>❌ Failed Conditions</div><table><tr><th>Metric</th><th>Actual</th><th>Threshold</th></tr>" >> sonar_quality_gate.html
-          jq -c '.projectStatus.conditions[] | select(.status=="ERROR")' sonar_quality_gate.json | while read row; do
-            METRIC=$(echo $row | jq -r '.metricKey')
-            ACTUAL=$(echo $row | jq -r '.actualValue')
-            THRESHOLD=$(echo $row | jq -r '.errorThreshold')
-            echo "<tr><td>$METRIC</td><td>$ACTUAL</td><td>$THRESHOLD</td></tr>" >> sonar_quality_gate.html
-          done
-          echo "</table></div>" >> sonar_quality_gate.html
-
-          # Warnings
-          echo "<div class='section'><div class='header skipped'>⚠️ Warnings / Skipped</div><table><tr><th>Metric</th><th>Actual</th><th>Threshold</th></tr>" >> sonar_quality_gate.html
-          jq -c '.projectStatus.conditions[] | select(.status=="WARN")' sonar_quality_gate.json | while read row; do
-            METRIC=$(echo $row | jq -r '.metricKey')
-            ACTUAL=$(echo $row | jq -r '.actualValue')
-            THRESHOLD=$(echo $row | jq -r '.errorThreshold')
-            echo "<tr><td>$METRIC</td><td>$ACTUAL</td><td>$THRESHOLD</td></tr>" >> sonar_quality_gate.html
-          done
-          echo "</table></div>" >> sonar_quality_gate.html
-
-          # Passed
-          echo "<div class='section'><div class='header passed'>✅ Passed Conditions</div><table><tr><th>Metric</th><th>Actual</th><th>Threshold</th></tr>" >> sonar_quality_gate.html
-          jq -c '.projectStatus.conditions[] | select(.status=="OK")' sonar_quality_gate.json | while read row; do
-            METRIC=$(echo $row | jq -r '.metricKey')
-            ACTUAL=$(echo $row | jq -r '.actualValue')
-            THRESHOLD=$(echo $row | jq -r '.errorThreshold')
-            echo "<tr><td>$METRIC</td><td>$ACTUAL</td><td>$THRESHOLD</td></tr>" >> sonar_quality_gate.html
-          done
-          echo "</table></div>" >> sonar_quality_gate.html
-          echo "</body></html>" >> sonar_quality_gate.html
-
-      # 1️⃣1️⃣ Upload artifacts
-      - name: Upload Quality Gate artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: sonar-quality-gate
-          path: |
-            sonar_quality_gate.json
-            sonar_quality_gate.html
+            -Dsonar.verbose=true
