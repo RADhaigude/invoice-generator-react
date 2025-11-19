@@ -18,11 +18,11 @@ jobs:
     timeout-minutes: 25
 
     steps:
-      # 1️⃣ Checkout repository
+      # 1️ Checkout repository
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2️⃣ Tooling (Node + jq + pandoc)
+      # 2️ Tooling (Node + jq + pandoc)
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -34,7 +34,7 @@ jobs:
           sudo apt-get install -y jq pandoc
           pandoc --version
 
-      # 3️⃣ Cache Node modules
+      # 3️ Cache Node modules
       - name: Cache Node modules
         uses: actions/cache@v4
         with:
@@ -43,11 +43,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node-
 
-      # 4️⃣ Install dependencies
+      # 4️ Install dependencies
       - name: Install dependencies
         run: npm ci
 
-      # 5️⃣ Run tests with coverage
+      # 5️ Run tests with coverage
       - name: Run tests with coverage
         run: |
           npm install --save-dev jest-canvas-mock
@@ -56,7 +56,7 @@ jobs:
             --json --outputFile=jest-results.json \
             --coverageReporters=text --coverageReporters=lcov --coverageReporters=html || echo "⚠️ Some tests failed, but continuing..."
 
-      # 6️⃣ Generate comprehensive test coverage report
+      # 6️ Generate comprehensive test coverage report
       - name: Generate test coverage report
         run: |
           mkdir -p reports/sonar/coverage
@@ -73,13 +73,13 @@ jobs:
             echo "| Branches | $(jq -r '.total.branches.pct' coverage/coverage-summary.json)% |" >> reports/sonar/coverage/SUMMARY.md
           fi
 
-      # 7️⃣ Build project
+      # 7️ Build project
       - name: Build project
         run: CI=false npm run build --if-present
         env:
           NODE_OPTIONS: --openssl-legacy-provider
 
-      # 8️⃣ SonarCloud Scan for pushes
+      # 8️ SonarCloud Scan for pushes
       - name: SonarCloud Scan
         if: github.event_name == 'push'
         uses: SonarSource/sonarcloud-github-action@v2
@@ -93,7 +93,7 @@ jobs:
             -Dsonar.exclusions=node_modules/**,coverage/**,build/**,dist/**,**/*.spec.ts,**/*.spec.tsx,**/*.test.ts,**/*.test.tsx,**/*.test.js
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
 
-      # 🔟 Fetch Quality Gate JSON
+      # 10 Fetch Quality Gate JSON
       - name: Fetch Quality Gate status
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -103,7 +103,7 @@ jobs:
             -o sonar_quality_gate.json
           cat sonar_quality_gate.json
 
-      # 1️⃣1️⃣ Build HTML view of Quality Gate
+      # 1️1 Build HTML view of Quality Gate
       - name: Convert Quality Gate JSON to HTML
         run: |
           echo "<html><head><title>SonarCloud Quality Gate</title></head><body>" > sonar_quality_gate.html
@@ -118,7 +118,7 @@ jobs:
           done
           echo "</table></body></html>" >> sonar_quality_gate.html
 
-      # 1️⃣2️⃣ Generate multi-format Sonar reports
+      # 1️2 Generate multi-format Sonar reports
       - name: Generate SonarCloud Reports
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -147,7 +147,7 @@ jobs:
           headers = {"Authorization": "Basic " + base64.b64encode(f"{token}:".encode()).decode()}
           r = requests.get(url, headers=headers)
           if r.status_code != 200:
-              print("❌ API call failed:", r.status_code, r.text)
+              print(" API call failed:", r.status_code, r.text)
               sys.exit(1)
           data = r.json()["component"]["measures"]
           # CSV
@@ -182,11 +182,11 @@ jobs:
               f.write(md_content)
           # RTF
           pypandoc.convert_text(md_content, 'rtf', format='md', outputfile='sonar_report_quality.rtf', extra_args=['--standalone'])
-          print("✅ Reports generated: CSV, XLSX, DOCX, MD, RTF")
+          print(" Reports generated: CSV, XLSX, DOCX, MD, RTF")
           EOF
           python3 sonar_report.py
 
-      # 1️⃣3️⃣ Create Job Summary
+      # 1️3 Create Job Summary
       - name: Create Job Summary
         if: always()
         run: |
@@ -218,7 +218,7 @@ jobs:
             echo "- **Status:** \`$QG\`" >> $GITHUB_STEP_SUMMARY
           fi
 
-      # 1️⃣4️⃣ Enforce Quality Gate
+      # 1️4 Enforce Quality Gate
       - name: Fail if Quality Gate fails (protect master)
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         run: |
@@ -227,7 +227,7 @@ jobs:
             echo "Quality Gate is $STATUS. Failing the job to protect master."
             exit 1
 
-      # 1️⃣5️⃣ Upload comprehensive reports
+      # 1️5 Upload comprehensive reports
       - name: Upload comprehensive reports
         if: always()
         uses: actions/upload-artifact@v4
