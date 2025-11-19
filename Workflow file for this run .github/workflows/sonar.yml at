@@ -13,17 +13,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout repository
+      # 1️ Checkout repository
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2️⃣ Setup Node.js
+      # 2️ Setup Node.js
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
 
-      # 3️⃣ Cache Node.js dependencies
+      # 3️ Cache Node.js dependencies
       - name: Cache Node modules
         uses: actions/cache@v4
         with:
@@ -32,22 +32,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node-
 
-      # 4️⃣ Install dependencies
+      # 4️ Install dependencies
       - name: Install dependencies
         run: npm ci
 
-      # 5️⃣ Run tests with coverage (pipeline continues even if no tests)
+      # 5️ Run tests with coverage (pipeline continues even if no tests)
       - name: Run tests with coverage
         run: npm test -- --coverage --watchAll=false --passWithNoTests || true
 
-      # 6️⃣ Build project (React + Node 18 fix)
+      # 6️ Build project (React + Node 18 fix)
       - name: Build project
         run: |
           CI=false npm run build --if-present
         env:
           NODE_OPTIONS: --openssl-legacy-provider
 
-      # 7️⃣ SonarCloud Scan for push events
+      # 7️ SonarCloud Scan for push events
       - name: SonarCloud Scan (push)
         if: github.event_name == 'push'
         uses: SonarSource/sonarcloud-github-action@v2
@@ -59,7 +59,7 @@ jobs:
             -Dsonar.organization=radhaigude
             -Dsonar.sources=.
 
-      # 8️⃣ SonarCloud Scan for pull requests
+      # 8️ SonarCloud Scan for pull requests
       - name: SonarCloud Scan (PR)
         if: github.event_name == 'pull_request'
         uses: SonarSource/sonarcloud-github-action@v2
@@ -74,7 +74,7 @@ jobs:
             -Dsonar.pullrequest.branch=${{ github.head_ref }}
             -Dsonar.pullrequest.base=${{ github.base_ref }}
 
-      # 9️⃣ Fetch Quality Gate JSON from SonarCloud
+      # 9️ Fetch Quality Gate JSON from SonarCloud
       - name: Fetch Quality Gate status
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -88,7 +88,7 @@ jobs:
           fi
           cat sonar_quality_gate.json
 
-      # 🔟 Convert Quality Gate JSON to styled HTML report
+      #  Convert Quality Gate JSON to styled HTML report
       - name: Convert Quality Gate JSON to Styled HTML
         run: |
           echo "<html><head><title>SonarCloud Quality Gate</title>" > sonar_quality_gate.html
@@ -108,7 +108,7 @@ jobs:
           echo "<h1>SonarCloud Quality Gate: $STATUS</h1>" >> sonar_quality_gate.html
 
           # Failed Conditions
-          echo "<div class='section'><div class='header failed'>❌ Failed Conditions</div><table><tr><th>Metric</th><th>Actual</th><th>Threshold</th></tr>" >> sonar_quality_gate.html
+          echo "<div class='section'><div class='header failed'> Failed Conditions</div><table><tr><th>Metric</th><th>Actual</th><th>Threshold</th></tr>" >> sonar_quality_gate.html
           jq -c '.projectStatus.conditions[] | select(.status=="ERROR")' sonar_quality_gate.json | while read row; do
             METRIC=$(echo $row | jq -r '.metricKey')
             ACTUAL=$(echo $row | jq -r '.actualValue')
@@ -118,7 +118,7 @@ jobs:
           echo "</table></div>" >> sonar_quality_gate.html
 
           # Skipped / Warn
-          echo "<div class='section'><div class='header skipped'>⚠️ Warnings / Skipped</div><table><tr><th>Metric</th><th>Actual</th><th>Threshold</th></tr>" >> sonar_quality_gate.html
+          echo "<div class='section'><div class='header skipped'> Warnings / Skipped</div><table><tr><th>Metric</th><th>Actual</th><th>Threshold</th></tr>" >> sonar_quality_gate.html
           jq -c '.projectStatus.conditions[] | select(.status=="WARN")' sonar_quality_gate.json | while read row; do
             METRIC=$(echo $row | jq -r '.metricKey')
             ACTUAL=$(echo $row | jq -r '.actualValue')
@@ -128,7 +128,7 @@ jobs:
           echo "</table></div>" >> sonar_quality_gate.html
 
           # Passed
-          echo "<div class='section'><div class='header passed'>✅ Passed Conditions</div><table><tr><th>Metric</th><th>Actual</th><th>Threshold</th></tr>" >> sonar_quality_gate.html
+          echo "<div class='section'><div class='header passed'>Passed Conditions</div><table><tr><th>Metric</th><th>Actual</th><th>Threshold</th></tr>" >> sonar_quality_gate.html
           jq -c '.projectStatus.conditions[] | select(.status=="OK")' sonar_quality_gate.json | while read row; do
             METRIC=$(echo $row | jq -r '.metricKey')
             ACTUAL=$(echo $row | jq -r '.actualValue')
@@ -139,7 +139,7 @@ jobs:
 
           echo "</body></html>" >> sonar_quality_gate.html
 
-      # 1️⃣1️⃣ Upload artifacts (JSON + HTML)
+      # 1️ Upload artifacts (JSON + HTML)
       - name: Upload Quality Gate artifacts
         uses: actions/upload-artifact@v4
         with:
